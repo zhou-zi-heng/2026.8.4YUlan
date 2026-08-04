@@ -1,4 +1,4 @@
-/* ===== 飞凡AI - 后端 (v3.1.0 批次1：engine_type + 配置白名单) ===== */
+/* ===== 飞凡AI - 后端 (v3.3.0 批次3：模板库 + 引擎体检) ===== */
 
 /* ---------- Web Crypto ---------- */
 async function sha256(t){const d=new TextEncoder().encode(t);const b=await crypto.subtle.digest('SHA-256',d);return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');}
@@ -56,7 +56,7 @@ async function hVerify(request,env){
     return jr({ok:true,user:{username:pl.username,name:name,role:role,permissions:perm}});
 }
 
-/* ==================== 用户：公有引擎（含 useCache + engineType） ==================== */
+/* ==================== 用户：公有引擎 ==================== */
 async function hEngines(request,env){
     const pl=await verifyUser(request,env);
     if(!pl)return jr({error:'未登录'},401);
@@ -64,49 +64,25 @@ async function hEngines(request,env){
         const rows=(await env.DB.prepare(
             'SELECT id,name,protocol,model,user_model,use_cache,engine_type,price_in,price_out,price_cache_read,price_cache_write FROM engines_public WHERE username=? ORDER BY name'
         ).bind(pl.username).all()).results||[];
-
         const engines=rows.map(e=>({
-            id:e.id,
-            name:e.name,
-            protocol:e.protocol,
+            id:e.id,name:e.name,protocol:e.protocol,
             model:e.user_model||e.model||'',
             useCache:!!e.use_cache,
             engineType:e.engine_type||'chat',
-            priceIn:e.price_in,
-            priceOut:e.price_out,
-            priceCacheRead:e.price_cache_read,
-            priceCacheWrite:e.price_cache_write,
+            priceIn:e.price_in,priceOut:e.price_out,
+            priceCacheRead:e.price_cache_read,priceCacheWrite:e.price_cache_write,
             origin:'public'
         }));
         return jr({ok:true,engines});
     }catch(e){
-        /* 兜底：老库缺列时降级读取，保证不白屏 */
         try{
-            const rows=(await env.DB.prepare(
-                'SELECT id,name,protocol,model,price_in,price_out,price_cache_read,price_cache_write FROM engines_public WHERE username=? ORDER BY name'
-            ).bind(pl.username).all()).results||[];
-
-            const engines=rows.map(e=>({
-                id:e.id,
-                name:e.name,
-                protocol:e.protocol,
-                model:e.model||'',
-                useCache:false,
-                engineType:'chat',
-                priceIn:e.price_in,
-                priceOut:e.price_out,
-                priceCacheRead:e.price_cache_read,
-                priceCacheWrite:e.price_cache_write,
-                origin:'public'
-            }));
+            const rows=(await env.DB.prepare('SELECT id,name,protocol,model,price_in,price_out,price_cache_read,price_cache_write FROM engines_public WHERE username=? ORDER BY name').bind(pl.username).all()).results||[];
+            const engines=rows.map(e=>({id:e.id,name:e.name,protocol:e.protocol,model:e.model||'',useCache:false,engineType:'chat',priceIn:e.price_in,priceOut:e.price_out,priceCacheRead:e.price_cache_read,priceCacheWrite:e.price_cache_write,origin:'public'}));
             return jr({ok:true,engines});
-        }catch(e2){
-            return jr({error:e2.message},500);
-        }
+        }catch(e2){return jr({error:e2.message},500);}
     }
 }
 
-/* 公有引擎「获取模型列表」：后端用引擎的 key 去中转站拉 models */
 async function hEngineModels(request,env,url){
     const pl=await verifyUser(request,env);if(!pl)return jr({error:'未登录'},401);
     const engId=url.searchParams.get('engineId');if(!engId)return jr({error:'缺engineId'},400);
@@ -121,9 +97,7 @@ async function hSetModel(request,env){
 async function hGetPresets(request,env){const pl=await verifyUser(request,env);if(!pl)return jr({error:'未登录'},401);try{const row=await env.DB.prepare('SELECT data FROM presets WHERE id=1').first();if(!row||!row.data)return jr({ok:true,presets:null});return jr({ok:true,presets:JSON.parse(row.data)});}catch(e){return jr({ok:true,presets:null});}}
 async function hLog(request,env){const pl=await verifyUser(request,env);if(!pl)return jr({error:'未登录'},401);let b;try{b=await request.json();}catch(e){return jr({error:'格式错误'},400);}try{await env.DB.prepare('INSERT INTO logs (username,chat_name,rounds,tokens,model,created_at) VALUES (?,?,?,?,?,?)').bind(pl.username,(b.chatName||'').slice(0,100),b.rounds||0,b.tokens||0,(b.model||'').slice(0,60),Date.now()).run();return jr({ok:true});}catch(e){return jr({ok:false});}}
 
-/* ==================== 用户读全局配置：★白名单脱敏★ ====================
-   绝不把 global_config 全表下发给普通用户。
-   将来往这张表塞任何敏感配置（第三方Key、webhook、内网地址）都不会泄露。 */
+/* ==================== 用户读全局配置：白名单脱敏 ==================== */
 async function hGetConfig(request,env){
     const pl=await verifyUser(request,env);
     if(!pl)return jr({error:'未登录'},401);
@@ -132,21 +106,19 @@ async function hGetConfig(request,env){
         const rows=(await env.DB.prepare('SELECT key,value FROM global_config').all()).results||[];
         const raw={};
         rows.forEach(r=>raw[r.key]=r.value);
-
-        /* 白名单：只下发前端确实要用、且不敏感的项 */
+        /* 只下发前端要用、且不敏感的项 */
         const safe={
             chunkSize:   raw.chunkSize   || '300',
             quickModels: raw.quickModels || '[]',
             quickCmds:   raw.quickCmds   || '',
         };
         return jr({ok:true,config:safe});
-    }catch(e){
-        return jr({ok:true,config:{}});
-    }
+    }catch(e){return jr({ok:true,config:{}});}
 }
 
 async function hGetModelPrices(request,env){const pl=await verifyUser(request,env);if(!pl)return jr({error:'未登录'},401);try{const rows=(await env.DB.prepare('SELECT model_name,price_in,price_out,price_cache_read,price_cache_write FROM model_prices').all()).results||[];const map={};rows.forEach(r=>map[r.model_name]={priceIn:r.price_in,priceOut:r.price_out,priceCacheRead:r.price_cache_read,priceCacheWrite:r.price_cache_write});return jr({ok:true,prices:map});}catch(e){return jr({ok:true,prices:{}});}}
 
+/* ==================== 管理路由 ==================== */
 async function hAdmin(request,env,action,payload){
     if(!env.DB)return jr({error:'D1 未绑定'},500);
     if(action==='ping')return jr({ok:true,admin:payload.username});
@@ -161,6 +133,12 @@ async function hAdmin(request,env,action,payload){
     if(action==='engines/list')return await aEnginesList(request,env,new URL(request.url));
     if(action==='engines/save')return await aEnginesSave(request,env);
     if(action==='engines/delete')return await aEnginesDelete(request,env);
+    if(action==='engines/health')return await aEnginesHealth(request,env);
+    if(action==='templates/list')return await aTemplatesList(env);
+    if(action==='templates/save')return await aTemplatesSave(request,env);
+    if(action==='templates/delete')return await aTemplatesDelete(request,env);
+    if(action==='templates/deploy')return await aTemplatesDeploy(request,env);
+    if(action==='templates/sync')return await aTemplatesSync(request,env);
     if(action==='presets/get')return await aPresetsGet(env);
     if(action==='presets/save')return await aPresetsSave(request,env);
     if(action==='monitor')return await aMonitor(env);
@@ -172,6 +150,7 @@ async function hAdmin(request,env,action,payload){
     return jr({error:'未知接口：'+action},404);
 }
 
+/* ==================== 账号 ==================== */
 async function aUsersList(env){
     try{const users=(await env.DB.prepare('SELECT id,username,name,role,status,permissions,created_at FROM users ORDER BY created_at DESC').all()).results||[];const engRows=(await env.DB.prepare('SELECT username,COUNT(*) AS cnt FROM engines_public GROUP BY username').all()).results||[];const engMap={};engRows.forEach(r=>engMap[r.username]=r.cnt);const weekAgo=Date.now()-7*24*3600*1000;const sess=(await env.DB.prepare('SELECT username,ip,last_active FROM sessions WHERE last_active>?').bind(weekAgo).all()).results||[];const sm={};sess.forEach(s=>{if(!sm[s.username])sm[s.username]={last:0,ips:{}};if(s.last_active>sm[s.username].last)sm[s.username].last=s.last_active;if(s.ip)sm[s.username].ips[s.ip]=1;});const list=users.map(u=>{const s=sm[u.username]||{last:0,ips:{}};const ipc=Object.keys(s.ips).length;return{username:u.username,name:u.name,role:u.role,status:u.status,permissions:u.permissions||'{}',engineCount:engMap[u.username]||0,lastActive:s.last,ipCount:ipc,ipAbnormal:ipc>=3};});return jr({ok:true,users:list});}catch(e){return jr({error:e.message},500);}
 }
@@ -185,58 +164,185 @@ async function aUsersImport(request,env){
     const rows=b.rows||[];if(!rows.length)return jr({error:'无数据'},400);
     let uc=0,ec=0,errs=[];const um={};
     rows.forEach(r=>{const un=String(r['账号']||'').trim();if(!un)return;if(!um[un])um[un]={username:un,password:String(r['密码']||'').trim(),name:String(r['姓名']||'').trim(),role:String(r['角色']||'user').trim()==='admin'?'admin':'user',engines:[]};const en=String(r['引擎名称']||'').trim();if(en)um[un].engines.push({name:en,protocol:String(r['协议']||'openai').trim(),base:String(r['BaseURL']||'').trim(),key:String(r['APIKey']||'').trim(),model:String(r['模型']||'').trim(),pi:parseFloat(r['输入单价'])||0,po:parseFloat(r['输出单价'])||0,pcr:parseFloat(r['缓存读单价'])||0,pcw:parseFloat(r['缓存写单价'])||0});});
-    for(const un in um){const u=um[un];try{if(!u.password){errs.push(un+'：缺密码');continue;}const h=await sha256(u.password);if(await env.DB.prepare('SELECT id FROM users WHERE username=?').bind(un).first())await env.DB.prepare('UPDATE users SET password_hash=?,name=?,role=? WHERE username=?').bind(h,u.name,u.role,un).run();else await env.DB.prepare('INSERT INTO users (username,password_hash,name,role,status,permissions,created_at) VALUES (?,?,?,?,?,?,?)').bind(un,h,u.name,u.role,'active','{}',Date.now()).run();uc++;await env.DB.prepare('DELETE FROM engines_public WHERE username=?').bind(un).run();for(const eng of u.engines){const eid='eng_'+un+'_'+Math.random().toString(36).slice(2,8);const ke=await encKey(eng.key,env.KEY_SECRET);await env.DB.prepare('INSERT INTO engines_public (id,username,name,protocol,base_url,api_key,model,use_cache,engine_type,price_in,price_out,price_cache_read,price_cache_write,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(eid,un,eng.name,eng.protocol,eng.base,ke,eng.model,0,'chat',eng.pi,eng.po,eng.pcr,eng.pcw,Date.now()).run();ec++;}}catch(e){errs.push(un+'：'+e.message);}}
+    for(const un in um){const u=um[un];try{if(!u.password){errs.push(un+'：缺密码');continue;}const h=await sha256(u.password);if(await env.DB.prepare('SELECT id FROM users WHERE username=?').bind(un).first())await env.DB.prepare('UPDATE users SET password_hash=?,name=?,role=? WHERE username=?').bind(h,u.name,u.role,un).run();else await env.DB.prepare('INSERT INTO users (username,password_hash,name,role,status,permissions,created_at) VALUES (?,?,?,?,?,?,?)').bind(un,h,u.name,u.role,'active','{}',Date.now()).run();uc++;await env.DB.prepare('DELETE FROM engines_public WHERE username=?').bind(un).run();for(const eng of u.engines){const eid='eng_'+un+'_'+Math.random().toString(36).slice(2,8);const ke=await encKey(eng.key,env.KEY_SECRET);await env.DB.prepare('INSERT INTO engines_public (id,username,name,protocol,base_url,api_key,model,use_cache,engine_type,price_in,price_out,price_cache_read,price_cache_write,tpl_id,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(eid,un,eng.name,eng.protocol,eng.base,ke,eng.model,0,'chat',eng.pi,eng.po,eng.pcr,eng.pcw,'',Date.now()).run();ec++;}}catch(e){errs.push(un+'：'+e.message);}}
     return jr({ok:true,userCount:uc,engCount:ec,errors:errs});
 }
 async function aUsersExport(request,env){const url=new URL(request.url);const wk=url.searchParams.get('withkey')==='1';try{const users=(await env.DB.prepare('SELECT username,name,role FROM users ORDER BY created_at').all()).results||[];const engs=(await env.DB.prepare('SELECT * FROM engines_public ORDER BY username').all()).results||[];const eb={};engs.forEach(e=>{if(!eb[e.username])eb[e.username]=[];eb[e.username].push(e);});const out=[];for(const u of users){const ue=eb[u.username]||[];if(!ue.length){out.push({姓名:u.name,账号:u.username,密码:'',角色:u.role,引擎名称:'',协议:'',BaseURL:'',APIKey:''});}else{for(const e of ue){let ko='******';if(wk)ko=await decKey(e.api_key,env.KEY_SECRET);out.push({姓名:u.name,账号:u.username,密码:'',角色:u.role,引擎名称:e.name,协议:e.protocol,BaseURL:e.base_url,APIKey:ko,模型:e.model,输入单价:e.price_in,输出单价:e.price_out,缓存读单价:e.price_cache_read,缓存写单价:e.price_cache_write});}}}return jr({ok:true,rows:out});}catch(e){return jr({error:e.message},500);}}
 
-/* ==================== 引擎管理（含 use_cache + engine_type） ==================== */
+/* ==================== 引擎管理 ==================== */
 async function aEnginesList(request,env,url){
     const un=url.searchParams.get('username');
     try{
         let rows;
         if(un){
             rows=(await env.DB.prepare(
-                'SELECT id,username,name,protocol,base_url,model,use_cache,engine_type,price_in,price_out,price_cache_read,price_cache_write FROM engines_public WHERE username=? ORDER BY name'
+                'SELECT id,username,name,protocol,base_url,model,use_cache,engine_type,tpl_id,price_in,price_out,price_cache_read,price_cache_write FROM engines_public WHERE username=? ORDER BY name'
             ).bind(un).all()).results||[];
         }else{
             rows=(await env.DB.prepare(
-                'SELECT id,username,name,protocol,base_url,model,use_cache,engine_type,price_in,price_out,price_cache_read,price_cache_write FROM engines_public ORDER BY username,name'
+                'SELECT id,username,name,protocol,base_url,model,use_cache,engine_type,tpl_id,price_in,price_out,price_cache_read,price_cache_write FROM engines_public ORDER BY username,name'
             ).all()).results||[];
         }
-
         const engs=rows.map(e=>({
-            id:e.id,
-            username:e.username,
-            name:e.name,
-            protocol:e.protocol,
-            base:e.base_url,
-            model:e.model,
+            id:e.id,username:e.username,name:e.name,protocol:e.protocol,
+            base:e.base_url,model:e.model,
             useCache:!!e.use_cache,
             engineType:e.engine_type||'chat',
+            tplId:e.tpl_id||'',
             hasKey:true,
-            priceIn:e.price_in,
-            priceOut:e.price_out,
-            priceCR:e.price_cache_read,
-            priceCW:e.price_cache_write
+            priceIn:e.price_in,priceOut:e.price_out,
+            priceCR:e.price_cache_read,priceCW:e.price_cache_write
         }));
         return jr({ok:true,engines:engs});
-    }catch(e){
-        return jr({error:e.message},500);
-    }
+    }catch(e){return jr({error:e.message},500);}
 }
 
 async function aEnginesSave(request,env){
     let b;
     try{b=await request.json();}catch(e){return jr({error:'格式错误'},400);}
-
     const un=(b.username||'').trim();
     if(!un)return jr({error:'缺账号'},400);
     if(!b.name)return jr({error:'引擎名必填'},400);
-
     try{
         const id=b.id||('eng_'+un+'_'+Math.random().toString(36).slice(2,8));
         const ex=b.id?await env.DB.prepare('SELECT api_key FROM engines_public WHERE id=?').bind(b.id).first():null;
+        let keyStored;
+        if(b.key&&b.key!=='******')keyStored=await encKey(b.key,env.KEY_SECRET);
+        else if(ex)keyStored=ex.api_key;
+        else keyStored='';
+        const uc=b.useCache?1:0;
+        const etype=(b.engineType==='image')?'image':'chat';
+        /* tplId：前端手动编辑时传空字符串 = 脱离模板管理 */
+        const tplId=(b.tplId!==undefined)?String(b.tplId||''):'';
+        if(ex){
+            await env.DB.prepare('UPDATE engines_public SET name=?,protocol=?,base_url=?,api_key=?,model=?,use_cache=?,engine_type=?,tpl_id=?,price_in=?,price_out=?,price_cache_read=?,price_cache_write=?,updated_at=? WHERE id=?')
+                .bind(b.name,b.protocol||'openai',b.base||'',keyStored,b.model||'',uc,etype,tplId,b.priceIn||0,b.priceOut||0,b.priceCR||0,b.priceCW||0,Date.now(),b.id).run();
+        }else{
+            await env.DB.prepare('INSERT INTO engines_public (id,username,name,protocol,base_url,api_key,model,use_cache,engine_type,tpl_id,price_in,price_out,price_cache_read,price_cache_write,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                .bind(id,un,b.name,b.protocol||'openai',b.base||'',keyStored,b.model||'',uc,etype,tplId,b.priceIn||0,b.priceOut||0,b.priceCR||0,b.priceCW||0,Date.now()).run();
+        }
+        return jr({ok:true,id});
+    }catch(e){return jr({error:e.message},500);}
+}
+
+async function aEnginesDelete(request,env){let b;try{b=await request.json();}catch(e){return jr({error:'格式错误'},400);}if(!b.id)return jr({error:'缺id'},400);try{await env.DB.prepare('DELETE FROM engines_public WHERE id=?').bind(b.id).run();return jr({ok:true});}catch(e){return jr({error:e.message},500);}}
+
+/* ==================== ★ 引擎体检（并发测连通） ====================
+   前端分批调用（每批 ≤20），避免 Cloudflare 子请求数上限 */
+async function aEnginesHealth(request,env){
+    let b;
+    try{b=await request.json();}catch(e){b={};}
+    const ids=Array.isArray(b.ids)?b.ids.slice(0,20):[];
+    if(!ids.length)return jr({error:'缺 ids'},400);
+
+    try{
+        const ph=ids.map(()=>'?').join(',');
+        const rows=(await env.DB.prepare(
+            'SELECT id,username,name,protocol,base_url,api_key,model,engine_type FROM engines_public WHERE id IN ('+ph+')'
+        ).bind(...ids).all()).results||[];
+
+        const tasks=rows.map(async(e)=>{
+            const meta={id:e.id,username:e.username,name:e.name,model:e.model||'',engineType:e.engine_type||'chat'};
+            const t0=Date.now();
+            try{
+                const base=(e.base_url||'').replace(/\/+$/,'');
+                if(!base)return Object.assign({},meta,{ok:false,msg:'Base URL 为空',ms:0});
+
+                const key=await decKey(e.api_key,env.KEY_SECRET);
+                if(!key)return Object.assign({},meta,{ok:false,msg:'密钥为空或解密失败（检查 KEY_SECRET 是否一致）',ms:0});
+
+                let path='models';
+                if(e.protocol==='anthropic')path='v1/models';
+                if(e.protocol==='gemini')path='v1beta/models';
+
+                const ctrl=new AbortController();
+                const timer=setTimeout(()=>{try{ctrl.abort();}catch(x){}},12000);
+                let resp;
+                try{
+                    resp=await fetch(base+'/'+path,{
+                        headers:{'Authorization':'Bearer '+key,'anthropic-version':'2023-06-01'},
+                        signal:ctrl.signal
+                    });
+                }finally{clearTimeout(timer);}
+
+                const ms=Date.now()-t0;
+
+                if(resp.ok){
+                    /* 顺便校验模型名是否在列表中 */
+                    let modelOk=null,modelCount=0;
+                    try{
+                        const data=await resp.json();
+                        let list=[];
+                        if(Array.isArray(data.data))list=data.data.map(m=>m.id||m.name).filter(Boolean);
+                        else if(Array.isArray(data.models))list=data.models.map(m=>(m.id||m.name||'').replace(/^models\//,'')).filter(Boolean);
+                        else if(Array.isArray(data))list=data.map(m=>m.id||m.name||m).filter(Boolean);
+                        modelCount=list.length;
+                        if(e.model&&list.length)modelOk=list.indexOf(e.model)>=0;
+                    }catch(err){}
+                    return Object.assign({},meta,{ok:true,msg:'正常',ms,modelOk,modelCount});
+                }
+
+                const txt=(await resp.text()).slice(0,120);
+                let hint='HTTP '+resp.status;
+                if(resp.status===401)hint+=' Key 无效';
+                else if(resp.status===403)hint+=' 无权限/被封';
+                else if(resp.status===402)hint+=' 余额不足';
+                else if(resp.status===404)hint+=' 路径不对（检查 Base URL）';
+                else if(resp.status===429)hint+=' 触发限流';
+                return Object.assign({},meta,{ok:false,msg:hint+'：'+txt,ms});
+
+            }catch(err){
+                const ms=Date.now()-t0;
+                const isAbort=(err&&(err.name==='AbortError'||/abort/i.test(err.message||'')));
+                return Object.assign({},meta,{ok:false,msg:isAbort?'超时（>12秒无响应）':('异常：'+(err.message||'unknown')),ms});
+            }
+        });
+
+        const results=await Promise.all(tasks);
+        return jr({ok:true,results});
+    }catch(e){
+        return jr({error:e.message},500);
+    }
+}
+
+/* ==================== ★ 引擎模板库 ==================== */
+
+/* 列表：Key 脱敏，只回 hasKey，并统计已下发数 */
+async function aTemplatesList(env){
+    try{
+        const rows=(await env.DB.prepare('SELECT * FROM engine_templates ORDER BY name').all()).results||[];
+        const cntRows=(await env.DB.prepare("SELECT tpl_id,COUNT(*) AS n FROM engines_public WHERE tpl_id IS NOT NULL AND tpl_id<>'' GROUP BY tpl_id").all()).results||[];
+        const cntMap={};
+        cntRows.forEach(r=>cntMap[r.tpl_id]=r.n);
+
+        const list=rows.map(t=>({
+            id:t.id,
+            name:t.name,
+            protocol:t.protocol||'openai',
+            base:t.base_url||'',
+            model:t.model||'',
+            hasKey:!!(t.api_key&&String(t.api_key).length),
+            useCache:!!t.use_cache,
+            engineType:t.engine_type||'chat',
+            priceIn:t.price_in,priceOut:t.price_out,
+            priceCR:t.price_cache_read,priceCW:t.price_cache_write,
+            deployed:cntMap[t.id]||0,
+            updatedAt:t.updated_at||0
+        }));
+        return jr({ok:true,templates:list});
+    }catch(e){
+        return jr({error:'模板表不存在或查询失败：'+e.message+'（请先执行建表SQL）'},500);
+    }
+}
+
+async function aTemplatesSave(request,env){
+    let b;
+    try{b=await request.json();}catch(e){return jr({error:'格式错误'},400);}
+    const name=(b.name||'').trim();
+    if(!name)return jr({error:'模板名必填'},400);
+    try{
+        const id=b.id||('tpl_'+Math.random().toString(36).slice(2,10));
+        const ex=b.id?await env.DB.prepare('SELECT api_key FROM engine_templates WHERE id=?').bind(b.id).first():null;
 
         let keyStored;
         if(b.key&&b.key!=='******')keyStored=await encKey(b.key,env.KEY_SECRET);
@@ -247,22 +353,102 @@ async function aEnginesSave(request,env){
         const etype=(b.engineType==='image')?'image':'chat';
 
         if(ex){
-            await env.DB.prepare(
-                'UPDATE engines_public SET name=?,protocol=?,base_url=?,api_key=?,model=?,use_cache=?,engine_type=?,price_in=?,price_out=?,price_cache_read=?,price_cache_write=?,updated_at=? WHERE id=?'
-            ).bind(b.name,b.protocol||'openai',b.base||'',keyStored,b.model||'',uc,etype,b.priceIn||0,b.priceOut||0,b.priceCR||0,b.priceCW||0,Date.now(),b.id).run();
+            await env.DB.prepare('UPDATE engine_templates SET name=?,protocol=?,base_url=?,api_key=?,model=?,use_cache=?,engine_type=?,price_in=?,price_out=?,price_cache_read=?,price_cache_write=?,updated_at=? WHERE id=?')
+                .bind(name,b.protocol||'openai',b.base||'',keyStored,b.model||'',uc,etype,b.priceIn||0,b.priceOut||0,b.priceCR||0,b.priceCW||0,Date.now(),b.id).run();
         }else{
-            await env.DB.prepare(
-                'INSERT INTO engines_public (id,username,name,protocol,base_url,api_key,model,use_cache,engine_type,price_in,price_out,price_cache_read,price_cache_write,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
-            ).bind(id,un,b.name,b.protocol||'openai',b.base||'',keyStored,b.model||'',uc,etype,b.priceIn||0,b.priceOut||0,b.priceCR||0,b.priceCW||0,Date.now()).run();
+            await env.DB.prepare('INSERT INTO engine_templates (id,name,protocol,base_url,api_key,model,use_cache,engine_type,price_in,price_out,price_cache_read,price_cache_write,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                .bind(id,name,b.protocol||'openai',b.base||'',keyStored,b.model||'',uc,etype,b.priceIn||0,b.priceOut||0,b.priceCR||0,b.priceCW||0,Date.now()).run();
         }
         return jr({ok:true,id});
-    }catch(e){
-        return jr({error:e.message},500);
-    }
+    }catch(e){return jr({error:e.message},500);}
 }
 
-async function aEnginesDelete(request,env){let b;try{b=await request.json();}catch(e){return jr({error:'格式错误'},400);}if(!b.id)return jr({error:'缺id'},400);try{await env.DB.prepare('DELETE FROM engines_public WHERE id=?').bind(b.id).run();return jr({ok:true});}catch(e){return jr({error:e.message},500);}}
+async function aTemplatesDelete(request,env){
+    let b;
+    try{b=await request.json();}catch(e){return jr({error:'格式错误'},400);}
+    if(!b.id)return jr({error:'缺id'},400);
+    try{
+        await env.DB.prepare('DELETE FROM engine_templates WHERE id=?').bind(b.id).run();
+        /* 已下发的引擎不删，只解除关联，避免误伤线上用户 */
+        await env.DB.prepare("UPDATE engines_public SET tpl_id='' WHERE tpl_id=?").bind(b.id).run();
+        return jr({ok:true});
+    }catch(e){return jr({error:e.message},500);}
+}
 
+/* 批量下发：模板 × 账号
+   mode: 'skip'（同名跳过，默认） | 'replace'（同名覆盖） */
+async function aTemplatesDeploy(request,env){
+    let b;
+    try{b=await request.json();}catch(e){return jr({error:'格式错误'},400);}
+    const tplIds=Array.isArray(b.templateIds)?b.templateIds:[];
+    const usernames=Array.isArray(b.usernames)?b.usernames:[];
+    const mode=(b.mode==='replace')?'replace':'skip';
+    if(!tplIds.length)return jr({error:'请至少选择一个模板'},400);
+    if(!usernames.length)return jr({error:'请至少选择一个账号'},400);
+
+    try{
+        const ph=tplIds.map(()=>'?').join(',');
+        const tpls=(await env.DB.prepare('SELECT * FROM engine_templates WHERE id IN ('+ph+')').bind(...tplIds).all()).results||[];
+        if(!tpls.length)return jr({error:'所选模板不存在'},404);
+
+        let created=0,updated=0,skipped=0;
+        const errs=[];
+
+        for(const un of usernames){
+            for(const t of tpls){
+                try{
+                    const ex=await env.DB.prepare('SELECT id FROM engines_public WHERE username=? AND name=?').bind(un,t.name).first();
+                    if(ex){
+                        if(mode==='skip'){skipped++;continue;}
+                        /* 覆盖：api_key 密文直接复用（同 KEY_SECRET） */
+                        await env.DB.prepare('UPDATE engines_public SET protocol=?,base_url=?,api_key=?,model=?,use_cache=?,engine_type=?,tpl_id=?,price_in=?,price_out=?,price_cache_read=?,price_cache_write=?,updated_at=? WHERE id=?')
+                            .bind(t.protocol||'openai',t.base_url||'',t.api_key||'',t.model||'',t.use_cache?1:0,t.engine_type||'chat',t.id,t.price_in||0,t.price_out||0,t.price_cache_read||0,t.price_cache_write||0,Date.now(),ex.id).run();
+                        updated++;
+                    }else{
+                        const eid='eng_'+un+'_'+Math.random().toString(36).slice(2,8);
+                        await env.DB.prepare('INSERT INTO engines_public (id,username,name,protocol,base_url,api_key,model,use_cache,engine_type,tpl_id,price_in,price_out,price_cache_read,price_cache_write,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                            .bind(eid,un,t.name,t.protocol||'openai',t.base_url||'',t.api_key||'',t.model||'',t.use_cache?1:0,t.engine_type||'chat',t.id,t.price_in||0,t.price_out||0,t.price_cache_read||0,t.price_cache_write||0,Date.now()).run();
+                        created++;
+                    }
+                }catch(e){
+                    errs.push(un+' / '+t.name+'：'+e.message);
+                }
+            }
+        }
+        return jr({ok:true,created,updated,skipped,errors:errs});
+    }catch(e){return jr({error:e.message},500);}
+}
+
+/* 同步：把模板最新内容推给所有 tpl_id 指向它的引擎
+   syncName=true 时连引擎名也覆盖（默认不覆盖，防止用户端名字突变） */
+async function aTemplatesSync(request,env){
+    let b;
+    try{b=await request.json();}catch(e){return jr({error:'格式错误'},400);}
+    const tplId=(b.templateId||'').trim();
+    if(!tplId)return jr({error:'缺 templateId'},400);
+    const syncName=!!b.syncName;
+
+    try{
+        const t=await env.DB.prepare('SELECT * FROM engine_templates WHERE id=?').bind(tplId).first();
+        if(!t)return jr({error:'模板不存在'},404);
+
+        const rows=(await env.DB.prepare('SELECT id FROM engines_public WHERE tpl_id=?').bind(tplId).all()).results||[];
+        let n=0;
+        for(const r of rows){
+            if(syncName){
+                await env.DB.prepare('UPDATE engines_public SET name=?,protocol=?,base_url=?,api_key=?,model=?,use_cache=?,engine_type=?,price_in=?,price_out=?,price_cache_read=?,price_cache_write=?,updated_at=? WHERE id=?')
+                    .bind(t.name,t.protocol||'openai',t.base_url||'',t.api_key||'',t.model||'',t.use_cache?1:0,t.engine_type||'chat',t.price_in||0,t.price_out||0,t.price_cache_read||0,t.price_cache_write||0,Date.now(),r.id).run();
+            }else{
+                await env.DB.prepare('UPDATE engines_public SET protocol=?,base_url=?,api_key=?,model=?,use_cache=?,engine_type=?,price_in=?,price_out=?,price_cache_read=?,price_cache_write=?,updated_at=? WHERE id=?')
+                    .bind(t.protocol||'openai',t.base_url||'',t.api_key||'',t.model||'',t.use_cache?1:0,t.engine_type||'chat',t.price_in||0,t.price_out||0,t.price_cache_read||0,t.price_cache_write||0,Date.now(),r.id).run();
+            }
+            n++;
+        }
+        return jr({ok:true,count:n});
+    }catch(e){return jr({error:e.message},500);}
+}
+
+/* ==================== 预设 / 监视 / 配置 / 模型库 ==================== */
 async function aPresetsGet(env){try{const row=await env.DB.prepare('SELECT data FROM presets WHERE id=1').first();return jr({ok:true,presets:row&&row.data?JSON.parse(row.data):null});}catch(e){return jr({ok:true,presets:null});}}
 async function aPresetsSave(request,env){let b;try{b=await request.json();}catch(e){return jr({error:'格式错误'},400);}if(!b.presets)return jr({error:'无预设数据'},400);try{const data=JSON.stringify(b.presets);const ex=await env.DB.prepare('SELECT id FROM presets WHERE id=1').first();if(ex)await env.DB.prepare('UPDATE presets SET data=?,updated_at=? WHERE id=1').bind(data,Date.now()).run();else await env.DB.prepare('INSERT INTO presets (id,data,updated_at) VALUES (1,?,?)').bind(data,Date.now()).run();return jr({ok:true});}catch(e){return jr({error:e.message},500);}}
 
@@ -273,6 +459,7 @@ async function aModelsList(env){try{const rows=(await env.DB.prepare('SELECT * F
 async function aModelsSave(request,env){let b;try{b=await request.json();}catch(e){return jr({error:'格式错误'},400);}const mn=(b.model_name||'').trim();if(!mn)return jr({error:'模型名必填'},400);try{const ex=await env.DB.prepare('SELECT model_name FROM model_prices WHERE model_name=?').bind(mn).first();if(ex)await env.DB.prepare('UPDATE model_prices SET price_in=?,price_out=?,price_cache_read=?,price_cache_write=? WHERE model_name=?').bind(b.priceIn||0,b.priceOut||0,b.priceCR||0,b.priceCW||0,mn).run();else await env.DB.prepare('INSERT INTO model_prices (model_name,price_in,price_out,price_cache_read,price_cache_write) VALUES (?,?,?,?,?)').bind(mn,b.priceIn||0,b.priceOut||0,b.priceCR||0,b.priceCW||0).run();return jr({ok:true});}catch(e){return jr({error:e.message},500);}}
 async function aModelsDelete(request,env){let b;try{b=await request.json();}catch(e){return jr({error:'格式错误'},400);}if(!b.model_name)return jr({error:'缺模型名'},400);try{await env.DB.prepare('DELETE FROM model_prices WHERE model_name=?').bind(b.model_name).run();return jr({ok:true});}catch(e){return jr({error:e.message},500);}}
 
+/* ==================== AI 请求代理 ==================== */
 async function hProxy(request,env,url,sub){
     const pl=await verifyUser(request,env);if(!pl)return jr({error:'未登录或登录已过期，请重新登录'},401);
     const auth=request.headers.get('X-Auth-Token')||'';
@@ -285,7 +472,7 @@ async function hProxy(request,env,url,sub){
     const headers=new Headers();
     const skip=['host','cf-connecting-ip','cf-ray','cf-visitor','cf-worker','cf-ipcountry','cf-ew-via','x-target-base','x-auth-token','x-engine-id','content-length','authorization','content-type'];
     for(const[k,v]of request.headers){if(!skip.includes(k.toLowerCase()))headers.set(k,v);}
-    /* ★ 生图改图走 multipart/form-data 时，必须让 fetch 自动带 boundary，不能手抄原 content-type */
+    /* 改图走 multipart 时不能手抄 content-type，需让 fetch 自动生成 boundary */
     const ct=request.headers.get('Content-Type')||'';
     if(ct&&ct.indexOf('multipart/form-data')<0)headers.set('Content-Type',ct);
     if(engineId)headers.set('Authorization','Bearer '+apiKey);else{const oa=request.headers.get('Authorization');if(oa)headers.set('Authorization',oa);}
@@ -295,12 +482,8 @@ async function hProxy(request,env,url,sub){
         const isBodyless=(request.method==='GET'||request.method==='HEAD');
         let body;
         if(!isBodyless){
-            if(ct.indexOf('multipart/form-data')>=0){
-                /* 改图：读成 FormData 再重发，fetch 会自动生成新的 boundary */
-                body=await request.formData();
-            }else{
-                body=request.body;
-            }
+            if(ct.indexOf('multipart/form-data')>=0)body=await request.formData();
+            else body=request.body;
         }
         const resp=await fetch(targetUrl,{method:request.method,headers,body:body});
         const nh=new Headers(resp.headers);
