@@ -9,7 +9,7 @@ let _dragChatId=null,_publicEngines=[],_userPerm={},_modelPrices={};
 /* ★ 批次2 */
 let _quickModels=[],_quickCmds=[],_quickOverride=null;
 let _wfVar={};              // 工作流：{stepId: variantId} 当前选中版本
-let _cmdActiveIdx=-1;       // 指令面板键盘选中项
+let _expChecked={};         // 导出勾选状态 {msgId:true}
 
 const MODE_SUFFIX={free:'-自由',workflow:'-工作流'};
 function modeLabel(m){return m==='workflow'?'工作流':'自由';}
@@ -1002,7 +1002,7 @@ function hKey(e){
 }
 
 /* ===== 弹窗 / 上传 ===== */
-function openM(n){const m=document.getElementById('mo-'+n);if(!m)return;m.classList.add('show');if(n==='cs'){renderCSForm();renderKBList();}if(n==='set'){renderEngTabs();renderEngForm();renderStorageInfo();renderGlobalSettings();}if(n==='exp')updExpPreview();if(n==='snap'&&IS_IOS){const w=document.getElementById('iosW');if(w)w.style.display='block';}}
+function openM(n){const m=document.getElementById('mo-'+n);if(!m)return;m.classList.add('show');if(n==='cs'){renderCSForm();renderKBList();}if(n==='set'){renderEngTabs();renderEngForm();renderStorageInfo();renderGlobalSettings();}if(n==='exp'){renderExpMsgList();updExpPreview();}if(n==='snap'&&IS_IOS){const w=document.getElementById('iosW');if(w)w.style.display='block';}}
 function closeM(n){const m=document.getElementById('mo-'+n);if(m)m.classList.remove('show');}
 function togSB(){document.getElementById('sb').classList.toggle('open');document.getElementById('sbOv').classList.toggle('show');}
 function togAtt(){document.getElementById('attPan').classList.toggle('show');}
@@ -1022,7 +1022,105 @@ async function rollbackImport(){let bak=null;try{bak=await DB.loadRollbackBackup
 
 /* ===== 导出（批次3升级为勾选式+Word/PDF） ===== */
 function updExp(){_exportMode=document.getElementById('expFmt').value;updExpPreview();}
-function buildExportContent(chatArg,modeArg){const c=chatArg||curChat();const mode=modeArg||_exportMode;if(!c||!c.messages||!c.messages.length)return{plain:'（无内容）',html:'<p>（无内容）</p>',title:'空对话',md:'（无内容）'};const title=c.title||'对话记录';const isPure=mode==='pure';let plain='',html='',mdOut='';if(!isPure){plain='【'+title+'】\n导出时间：'+new Date().toLocaleString()+'\n\n';mdOut='# '+title+'\n\n> 导出时间：'+new Date().toLocaleString()+'\n\n';html='<h1>'+esc(title)+'</h1><p style="color:#888;font-size:12px">导出时间：'+esc(new Date().toLocaleString())+'</p><hr>';}c.messages.forEach((m)=>{const text=typeof m.content==='string'?m.content:JSON.stringify(m.content);if(isPure){if(m.role==='assistant'&&text){plain+=text+'\n\n';mdOut+=text+'\n\n---\n\n';html+=UI.renderMarkdown(text)+'<hr style="border:none;border-top:1px dashed #ccc;margin:24px 0">';}}else{const roleName=m.role==='user'?'👤 我':(m.role==='assistant'?'🤖 AI':'⚙️ 系统');plain+='【'+roleName+'】'+(m._time?' '+m._time:'')+'\n'+text+'\n\n';mdOut+='## '+roleName+(m._time?' ('+m._time+')':'')+'\n\n'+text+'\n\n';html+='<div style="margin:18px 0;padding:12px 16px;background:'+(m.role==='user'?'#e3f2fd':'#f5f5f5')+';border-radius:8px"><strong>'+esc(roleName)+'</strong>'+(m._time?' <span style="color:#888;font-size:12px">'+esc(m._time)+'</span>':'')+'<div style="margin-top:6px">'+(m.role==='assistant'?UI.renderMarkdown(text):'<pre style="white-space:pre-wrap;font-family:inherit;margin:0">'+esc(text)+'</pre>')+'</div></div>';}});return{plain:plain.trim(),html,title,md:mdOut.trim()};}
+/* ===== 导出：勾选式消息列表 ===== */
+function renderExpMsgList(){
+    const box=document.getElementById('expMsgList');
+    if(!box)return;
+    const c=curChat();
+    if(!c||!c.messages||!c.messages.length){
+        box.innerHTML='<div style="font-size:12px;color:var(--text2)">（当前对话无消息）</div>';
+        _expChecked={};
+        return;
+    }
+    _expChecked={};
+    let html='';
+    c.messages.forEach(m=>{
+        _expChecked[m.id]=true;   // 默认全选
+        const icon=m.role==='user'?'👤':(m.role==='assistant'?'🤖':'⚙️');
+        let preview=typeof m.content==='string'?m.content:'[多媒体内容]';
+        preview=preview.replace(/\n/g,' ').replace(/!\[[^\]]*\]\([^)]*\)/g,'[图]').replace(/\s+/g,' ').slice(0,34);
+        html+='<label style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px;cursor:pointer">'
+            +'<input type="checkbox" data-mid="'+esc(m.id)+'" checked onchange="expToggle(this)" style="accent-color:var(--pri);flex-shrink:0">'
+            +'<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+icon+' '+esc(preview)+(preview.length>=34?'…':'')+'</span>'
+            +'</label>';
+    });
+    box.innerHTML=html;
+}
+function expToggle(el){
+    _expChecked[el.getAttribute('data-mid')]=el.checked;
+    updExpPreview();
+}
+function expSelectAll(val){
+    document.querySelectorAll('#expMsgList input[type="checkbox"]').forEach(cb=>{
+        cb.checked=val;
+        _expChecked[cb.getAttribute('data-mid')]=val;
+    });
+    updExpPreview();
+}
+function getCheckedMessages(){
+    const c=curChat();
+    if(!c||!c.messages)return [];
+    /* 勾选列表为空（如存档调用）时视为全选 */
+    if(!Object.keys(_expChecked).length)return c.messages.slice();
+    return c.messages.filter(m=>_expChecked[m.id]);
+}
+
+/* ===== 构建导出内容（基于勾选） ===== */
+function buildExportContent(chatArg,modeArg){
+    const c=chatArg||curChat();
+    const mode=modeArg||_exportMode;
+    /* _forceAll：存档/HTML 全量导出时用 */
+    const msgs=(chatArg&&chatArg._forceAll)?(c.messages||[]):getCheckedMessages();
+
+    if(!c||!msgs||!msgs.length)
+        return{plain:'（无内容）',html:'<p>（无内容）</p>',title:'空对话',md:'（无内容）',count:0};
+
+    const title=c.title||'对话记录';
+    const isPure=mode==='pure';
+    let plain='',html='',mdOut='';
+
+    if(!isPure){
+        plain='【'+title+'】\n导出时间：'+new Date().toLocaleString()+'\n\n';
+        mdOut='# '+title+'\n\n> 导出时间：'+new Date().toLocaleString()+'\n\n';
+        html='<h1>'+esc(title)+'</h1><p style="color:#888;font-size:12px">导出时间：'+esc(new Date().toLocaleString())+'</p><hr>';
+    }
+
+    msgs.forEach((m)=>{
+        const text=typeof m.content==='string'?m.content:JSON.stringify(m.content);
+        if(isPure){
+            if(m.role==='assistant'&&text){
+                plain+=text+'\n\n';
+                mdOut+=text+'\n\n---\n\n';
+                html+=UI.renderMarkdown(text)+'<hr style="border:none;border-top:1px dashed #ccc;margin:24px 0">';
+            }
+        }else{
+            const roleName=m.role==='user'?'👤 我':(m.role==='assistant'?'🤖 AI':'⚙️ 系统');
+            plain+='【'+roleName+'】'+(m._time?' '+m._time:'')+'\n'+text+'\n\n';
+            mdOut+='## '+roleName+(m._time?' ('+m._time+')':'')+'\n\n'+text+'\n\n';
+            html+='<div style="margin:18px 0;padding:12px 16px;background:'+(m.role==='user'?'#e3f2fd':'#f5f5f5')+';border-radius:8px"><strong>'+esc(roleName)+'</strong>'+(m._time?' <span style="color:#888;font-size:12px">'+esc(m._time)+'</span>':'')+'<div style="margin-top:6px">'+(m.role==='assistant'?UI.renderMarkdown(text):'<pre style="white-space:pre-wrap;font-family:inherit;margin:0">'+esc(text)+'</pre>')+'</div></div>';
+        }
+    });
+
+    return{plain:plain.trim(),html,title,md:mdOut.trim(),count:msgs.length};
+}
+
+/* ===== 供 docx 用：整理成 sections ===== */
+function buildExportSections(){
+    const msgs=getCheckedMessages();
+    const isPure=_exportMode==='pure';
+    const sections=[];
+    msgs.forEach(m=>{
+        const text=typeof m.content==='string'?m.content:'[多媒体内容]';
+        if(isPure){
+            if(m.role==='assistant'&&text)sections.push({roleLabel:'',content:text});
+        }else{
+            const roleName=m.role==='user'?'👤 我':(m.role==='assistant'?'🤖 AI':'⚙️ 系统');
+            sections.push({roleLabel:roleName+(m._time?' ('+m._time+')':''),content:text});
+        }
+    });
+    return sections;
+}
+
 function buildArchiveHtml(chat){const {html,title}=buildExportContent(chat,'full');return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>'+esc(title)+'</title><style>body{font-family:-apple-system,sans-serif;max-width:860px;margin:32px auto;padding:0 16px;line-height:1.7;color:#222}pre{background:#f6f8fa;border-radius:8px;padding:12px;overflow-x:auto}table{border-collapse:collapse}th,td{border:1px solid #ddd;padding:6px 12px}img{max-width:100%}</style></head><body>'+html+'</body></html>';}
 function updExpPreview(){const ta=document.getElementById('expTA');if(!ta)return;ta.value=buildExportContent().plain;}
 function eTxt(){const {plain,title}=buildExportContent();dl(plain,(title||'chat')+'-'+new Date().toISOString().replace(/[:.]/g,'-').slice(0,19)+'.txt','text/plain');toast('✅ TXT 已导出');}
