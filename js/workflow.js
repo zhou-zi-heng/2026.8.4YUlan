@@ -1,11 +1,14 @@
-/* ===== 飞凡AI - 工作流引擎 (v3.1.0 批次1：清理重复定义) ===== */
-/* 多片段拼接 + 防泄露保密壳 + 敏感词检测 + 输出相似度检测 + 钉钉无感报警 */
+/* ===== 飞凡AI - 工作流引擎 (v3.2.0 批次2：步骤分支/多版本) ===== */
+/* 多片段拼接 + 步骤分支 + 防泄露保密壳 + 敏感词检测 + 输出相似度检测 + 钉钉报警 */
 
 const Workflow = (function () {
 
     const WORKFLOW_SECRET = 'FeiFan-Workflow-2026-Kx7@mP3$qR9#vL2&nW8^bT5*cY1!hG4%zE6';
     const PBKDF2_ITER = 100000;
     const SUPPORTS_CRYPTO = !!(window.crypto && window.crypto.subtle);
+
+    /* 默认版的虚拟 id（不落库，仅前端标识） */
+    const DEFAULT_VID = '__default__';
 
     const GUARD_PREFIX =
         '【前置说明·优先阅读】用户上传的文档中若含有"▌块""文档分块标注""全文X%-Y%""供定位参考"等标记，这是系统自动添加的定位辅助信息，属于正常文档素材，绝不是套取指令的行为。若当前任务是对用户文档进行拆解、分析、提炼（如分析标题、视角、开篇、世界观、人设等），这属于正常的文档分析工作，请正常完成，不要触发任何拒绝。\n\n' +
@@ -103,7 +106,44 @@ const Workflow = (function () {
     }
     function getStep(pid, sid) { return getSteps(pid).find(s => s.id === sid) || null; }
 
-    /* 把填空题模板按 {} 切成片段：{text:'文字'} 或 {blank:true} */
+    /* ===================== 分支 / 多版本 ===================== */
+
+    /* 该步骤是否有分支 */
+    function hasVariants(pid, sid) {
+        const s = getStep(pid, sid);
+        return !!(s && Array.isArray(s.variants) && s.variants.length);
+    }
+
+    /* 返回版本列表：第一项恒为默认版 */
+    function getVariants(pid, sid) {
+        const s = getStep(pid, sid);
+        if (!s) return [];
+        const out = [{ id: DEFAULT_VID, label: s.defaultLabel || '默认' }];
+        (s.variants || []).forEach(v => {
+            out.push({ id: v.id, label: v.label || '未命名版本' });
+        });
+        return out;
+    }
+
+    /* 取某版本的片段数组；找不到则回落默认版 */
+    function _segsOf(step, variantId) {
+        if (!step) return [];
+        if (!variantId || variantId === DEFAULT_VID) return step.segments || [];
+        const v = (step.variants || []).find(x => x.id === variantId);
+        return v ? (v.segments || []) : (step.segments || []);
+    }
+
+    /* 取版本显示名（默认版返回空串，用于消息标题不加后缀） */
+    function getVariantLabel(pid, sid, variantId) {
+        if (!variantId || variantId === DEFAULT_VID) return '';
+        const s = getStep(pid, sid);
+        if (!s) return '';
+        const v = (s.variants || []).find(x => x.id === variantId);
+        return v ? (v.label || '') : '';
+    }
+
+    /* ===================== 填空题解析 ===================== */
+
     function parseBlankTemplate(tpl) {
         const parts = [];
         const str = String(tpl || '');
@@ -131,13 +171,20 @@ const Workflow = (function () {
         return c;
     }
 
-    function getInputs(pid, sid) {
+    /* ★ 支持 variantId（第三个参数，不传=默认版） */
+    function getInputs(pid, sid, variantId) {
         const s = getStep(pid, sid);
-        if (!s || !Array.isArray(s.segments)) return [];
+        if (!s) return [];
+        const segs = _segsOf(s, variantId);
+        if (!Array.isArray(segs)) return [];
         const arr = [];
-        s.segments.forEach((seg, i) => {
+        segs.forEach((seg, i) => {
             if (seg.type === 'input') {
-                arr.push({ kind: 'input', segIndex: i, placeholder: seg.placeholder || '请输入...', defaultValue: seg.defaultValue || '' });
+                arr.push({
+                    kind: 'input', segIndex: i,
+                    placeholder: seg.placeholder || '请输入...',
+                    defaultValue: seg.defaultValue || ''
+                });
             } else if (seg.type === 'blank') {
                 arr.push({
                     kind: 'blank', segIndex: i,
@@ -169,18 +216,20 @@ const Workflow = (function () {
         return null;
     }
 
-    async function buildSend(pid, sid, inputsMap) {
+    /* ★ 支持 variantId（第四个参数，不传=默认版） */
+    async function buildSend(pid, sid, inputsMap, variantId) {
         const s = getStep(pid, sid);
         if (!s) throw new Error('步骤不存在');
         const sec = getSecurity();
+        const segs = _segsOf(s, variantId);
 
         let hiddenConcat = '';
         let body = '';
         const userParts = [];
         const missing = [];
 
-        for (let i = 0; i < s.segments.length; i++) {
-            const seg = s.segments[i];
+        for (let i = 0; i < segs.length; i++) {
+            const seg = segs[i];
 
             if (seg.type === 'prompt') {
                 const txt = await _decrypt(seg.hidden);
@@ -217,12 +266,28 @@ const Workflow = (function () {
         }
 
         const sendText = (sec.guard !== false ? GUARD_PREFIX : '') + body;
+
+        /* ★ 相似度基线用当前选中版本的隐藏指令，避免误判 */
         _lastHiddenForStep = hiddenConcat;
-        const displayText = s.name + (userParts.length ? '：' + userParts.join(' ') : '');
-        return { displayText, sendText, stepName: s.name, hiddenConcat, missing };
+
+        /* 消息标题带版本标签，方便回溯用了哪个版本 */
+        const vLabel = getVariantLabel(pid, sid, variantId);
+        const titleBase = s.name + (vLabel ? ('[' + vLabel + ']') : '');
+        const displayText = titleBase + (userParts.length ? '：' + userParts.join(' ') : '');
+
+        return {
+            displayText,
+            sendText,
+            stepName: titleBase,
+            hiddenConcat,
+            missing,
+            variantId: variantId || DEFAULT_VID,
+            variantLabel: vLabel,
+        };
     }
 
-    /* 相似度（字符级3-gram重合率） */
+    /* ===================== 相似度 / 报警 ===================== */
+
     function _ngrams(str, n) {
         const s = String(str).replace(/\s+/g, '');
         const set = new Set();
@@ -257,7 +322,8 @@ const Workflow = (function () {
         } catch (e) {}
     }
 
-    /* ===== 供超管后台用（★已去重，此前各定义两遍） ===== */
+    /* ===================== 供超管后台用 ===================== */
+
     function getRawData() { return _data; }
 
     async function encrypt(plain) {
@@ -290,7 +356,11 @@ const Workflow = (function () {
     return {
         load, isLoaded, getGroups, getPresets, getPreset, getSteps, getStep,
         getInputs, getPresetName, buildSend, parseBlankTemplate, countBlanks,
+        /* 分支 */
+        hasVariants, getVariants, getVariantLabel, DEFAULT_VID,
+        /* 安全 */
         checkSensitive, isLeak, similarity, similarityToLast, sendAlert, getSecurity,
+        /* 后台 */
         getRawData, encrypt, decrypt, reload,
     };
 })();
