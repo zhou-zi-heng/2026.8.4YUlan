@@ -450,27 +450,43 @@ const Admin = (function () {
         const total = 1 + vars.length;
         let html = '<div class="pv-tabs"><span class="pv-lbl">🔀 版本：</span>';
 
-        /* 默认版 */
+        /* 默认版（属性统一用单引号包裹，内部 JSON.stringify 出双引号，不冲突） */
         const dLabel = step.defaultLabel || '默认';
         const dAct = (curVid === DEFAULT_VID) ? ' act' : '';
-        html += `<span class="pv-tab${dAct}" onclick="Admin.selVariant(${si},'${DEFAULT_VID}')" title="点击切换；双击改名" ondblclick="Admin.renameDefaultVar(${si})">${esc(dLabel)}</span>`;
+        html += '<span class="pv-tab' + dAct + '"'
+            + ' style="user-select:none"'
+            + ' title="点击切换｜双击改名"'
+            + " onclick='Admin.selVariant(" + si + "," + JSON.stringify(DEFAULT_VID) + ")'"
+            + " ondblclick='Admin.renameDefaultVar(" + si + ")'"
+            + '>' + esc(dLabel) + '</span>';
 
         /* 分支版 */
         vars.forEach(v => {
             const act = (curVid === v.id) ? ' act' : '';
-            html += `<span class="pv-tab${act}" onclick="Admin.selVariant(${si},${JSON.stringify(v.id)})" title="点击切换；双击改名" ondblclick='Admin.renameVariant(${si},${JSON.stringify(v.id)})'>${esc(v.label || '未命名')}<button class="pv-x" onclick='event.stopPropagation();Admin.delVariant(${si},${JSON.stringify(v.id)})' title="删除此版本">×</button></span>`;
+            const vidJson = JSON.stringify(v.id);
+            html += '<span class="pv-tab' + act + '"'
+                + ' style="user-select:none"'
+                + ' title="点击切换｜双击改名"'
+                + " onclick='Admin.selVariant(" + si + "," + vidJson + ")'"
+                + " ondblclick='Admin.renameVariant(" + si + "," + vidJson + ")'"
+                + '>' + esc(v.label || '未命名')
+                + '<button class="pv-x"'
+                + " onclick='event.stopPropagation();Admin.delVariant(" + si + "," + vidJson + ")'"
+                + ' title="删除此版本">×</button>'
+                + '</span>';
         });
 
-        /* 新建（最多3个） */
+        /* 新建（含默认版最多 3 个） */
         if (total < 3) {
-            html += `<button class="pv-add" onclick="Admin.addVariant(${si})">+ 新建版本</button>`;
+            html += '<button class="pv-add" onclick="Admin.addVariant(' + si + ')">+ 新建版本</button>';
         } else {
-            html += `<span style="font-size:10px;color:var(--text2)">（已达3版上限）</span>`;
+            html += '<span style="font-size:10px;color:var(--text2)">（已达3版上限）</span>';
         }
 
         html += '</div>';
         return html;
     }
+
 
     function selVariant(si, vid) { _curVar[si] = vid; drawPresetEditor(); }
 
