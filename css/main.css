@@ -441,11 +441,11 @@ body{
 }
 .lightbox.show{display:flex}
 .lightbox img{max-width:92vw;max-height:92vh;border-radius:8px}
-/* ===== v2.6.0 文件夹 / 日期分组 / 拖拽 ===== */
+
+/* ===== 文件夹 / 日期分组 / 拖拽 ===== */
 .ci.dragging{opacity:.45}
 .cl.with-dategroup{margin-bottom:2px}
 
-/* 日期分组小标题 */
 .dg-lbl{
     display:flex;justify-content:space-between;align-items:center;
     font-size:10px;color:var(--text2);font-weight:600;
@@ -454,7 +454,6 @@ body{
 .dg-lbl:hover{color:var(--pri)}
 .dg-lbl .fd-cnt{background:var(--pri-l);color:var(--pri);border-radius:8px;padding:0 6px;font-size:10px}
 
-/* 文件夹 */
 #folderArea{display:flex;flex-direction:column;gap:2px;margin-bottom:2px}
 .folder{border-radius:6px}
 .folder.drop-hover{background:var(--pri-l);outline:2px dashed var(--pri);outline-offset:-2px}
@@ -475,3 +474,146 @@ body{
 .folder.collapsed .folder-cl{display:none}
 @media(hover:none){.folder-hdr .fd-acts{display:flex}}
 
+/* ================================================== */
+/* ============ 批次2 新增样式 ======================= */
+/* ================================================== */
+
+/* ===== 表格导出Excel 按钮 ===== */
+.table-wrap{
+    position:relative;
+    margin:8px 0;
+    overflow-x:auto;
+}
+.table-wrap table{margin-top:32px}
+.table-export-btn{
+    position:absolute;top:2px;left:0;
+    background:var(--card);border:1px solid var(--border);
+    border-radius:5px;padding:3px 10px;font-size:11px;
+    cursor:pointer;color:var(--text2);transition:all .15s;z-index:1;
+}
+.table-export-btn:hover{color:var(--pri);border-color:var(--pri)}
+
+/* ===== Mermaid 图下载按钮 ===== */
+.mermaid-dl-btn{
+    position:absolute;top:6px;right:8px;
+    background:var(--card);border:1px solid var(--border);
+    border-radius:5px;padding:3px 10px;font-size:11px;
+    cursor:pointer;color:var(--text2);transition:all .15s;z-index:1;
+}
+.mermaid-dl-btn:hover{color:var(--pri);border-color:var(--pri)}
+
+/* ===== 思考过程折叠 ===== */
+.think-box{
+    margin-bottom:6px;
+    border:1px solid var(--border);
+    border-radius:8px;
+    background:var(--pri-l);
+    overflow:hidden;
+}
+.think-box summary{
+    padding:6px 12px;cursor:pointer;
+    font-size:12px;color:var(--text2);user-select:none;
+}
+.think-box summary:hover{color:var(--pri)}
+.think-content{
+    padding:8px 12px;
+    font-size:12px;line-height:1.7;color:var(--text2);
+    white-space:pre-wrap;
+    border-top:1px solid var(--border);
+    max-height:300px;overflow-y:auto;
+}
+
+/* ===== 快捷模型档按钮 ===== */
+#quickModelBar{display:none}
+#quickModelBar.show{display:inline-flex}
+.qm-btn{
+    padding:3px 10px;
+    border:1px solid var(--border);
+    border-radius:14px;
+    background:var(--card);color:var(--text2);
+    font-size:12px;cursor:pointer;transition:all .12s;
+}
+.qm-btn:hover{border-color:var(--pri);color:var(--pri)}
+.qm-btn.act{
+    background:linear-gradient(135deg,#667eea,#764ba2);
+    color:#fff;border-color:transparent;font-weight:600;
+}
+
+/* ===== 快捷指令面板 ===== */
+.cmd-panel{
+    display:none;
+    position:absolute;bottom:100%;left:0;right:0;
+    margin-bottom:6px;
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:10px;
+    box-shadow:0 -4px 20px rgba(0,0,0,.12);
+    max-height:240px;overflow-y:auto;
+    z-index:150;padding:4px;
+}
+.cmd-panel.show{display:block}
+.cmd-item{padding:7px 10px;border-radius:7px;cursor:pointer;font-size:13px}
+.cmd-item:hover,.cmd-item.act{background:var(--pri-l)}
+.cmd-item .cmd-name{font-weight:600;color:var(--text)}
+.cmd-item .cmd-preview{font-size:11px;color:var(--text2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ===== 工作流：步骤版本标签（前台） ===== */
+.wf-var-row{
+    display:flex;align-items:center;gap:4px;
+    flex-wrap:wrap;margin-bottom:8px;
+}
+.wf-var-lbl{font-size:11px;color:var(--text2);flex-shrink:0}
+.wf-var-btn{
+    padding:2px 9px;
+    border:1px solid var(--border);border-radius:12px;
+    background:var(--bg);color:var(--text2);
+    font-size:11px;cursor:pointer;transition:all .12s;
+}
+.wf-var-btn:hover{border-color:var(--pri);color:var(--pri)}
+.wf-var-btn.act{
+    background:linear-gradient(135deg,#667eea,#764ba2);
+    color:#fff;border-color:transparent;font-weight:600;
+}
+
+/* ===== 后台：预设步骤拖拽排序 ===== */
+.pstep{transition:box-shadow .15s,opacity .15s}
+.pstep.dragging{opacity:.4}
+.pstep.drag-over{box-shadow:0 -3px 0 0 var(--pri) inset;border-color:var(--pri)}
+.pstep-drag{
+    cursor:grab;font-size:13px;color:var(--text2);
+    flex-shrink:0;padding:0 2px;user-select:none;
+}
+.pstep-drag:active{cursor:grabbing}
+.pstep-drag:hover{color:var(--pri)}
+
+/* ===== 后台：步骤版本标签（编辑器） ===== */
+.pv-tabs{
+    display:flex;align-items:center;gap:4px;
+    flex-wrap:wrap;margin-bottom:10px;
+    padding:6px 8px;background:var(--pri-l);border-radius:8px;
+}
+.pv-lbl{font-size:11px;color:var(--text2);flex-shrink:0;font-weight:600}
+.pv-tab{
+    display:inline-flex;align-items:center;gap:3px;
+    padding:3px 9px;
+    border:1px solid var(--border);border-radius:12px;
+    background:var(--card);color:var(--text2);
+    font-size:11px;cursor:pointer;
+}
+.pv-tab:hover{border-color:var(--pri);color:var(--pri)}
+.pv-tab.act{
+    background:linear-gradient(135deg,#667eea,#764ba2);
+    color:#fff;border-color:transparent;font-weight:600;
+}
+.pv-tab .pv-x{
+    border:none;background:none;cursor:pointer;
+    font-size:12px;line-height:1;padding:0;color:inherit;opacity:.75;
+}
+.pv-tab .pv-x:hover{opacity:1}
+.pv-add{
+    padding:3px 9px;
+    border:1px dashed var(--pri);border-radius:12px;
+    background:transparent;color:var(--pri);
+    font-size:11px;cursor:pointer;
+}
+.pv-add:hover{background:var(--card)}
