@@ -1125,8 +1125,42 @@ function buildArchiveHtml(chat){const {html,title}=buildExportContent(chat,'full
 function updExpPreview(){const ta=document.getElementById('expTA');if(!ta)return;ta.value=buildExportContent().plain;}
 function eTxt(){const {plain,title}=buildExportContent();dl(plain,(title||'chat')+'-'+new Date().toISOString().replace(/[:.]/g,'-').slice(0,19)+'.txt','text/plain');toast('✅ TXT 已导出');}
 function eMd(){const {md,title}=buildExportContent();dl(md,(title||'chat')+'-'+new Date().toISOString().replace(/[:.]/g,'-').slice(0,19)+'.md','text/markdown');toast('✅ Markdown 已导出');}
-function eHtml(){const c=curChat();const full=buildArchiveHtml(c);const {title}=buildExportContent();dl(full,(title||'chat')+'-'+new Date().toISOString().replace(/[:.]/g,'-').slice(0,19)+'.html','text/html');toast('✅ HTML 已导出');}
-function eDoc(){const {html,title}=buildExportContent();const full='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="UTF-8"><title>'+esc(title)+'</title></head><body>'+html+'</body></html>';dl(full,(title||'chat')+'-'+new Date().toISOString().replace(/[:.]/g,'-').slice(0,19)+'.doc','application/msword');toast('✅ Word 已导出');}
+function eHtml(){
+    const {html,title,count}=buildExportContent();
+    if(!count){toast('请至少勾选一条消息','er');return;}
+    const full='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>'+esc(title)+'</title><style>body{font-family:"Microsoft YaHei",-apple-system,sans-serif;max-width:860px;margin:32px auto;padding:0 16px;line-height:1.75;color:#222}pre{background:#f6f8fa;border-radius:8px;padding:12px;overflow-x:auto}table{border-collapse:collapse}th,td{border:1px solid #ddd;padding:6px 12px}th{background:#eef0ff}img{max-width:100%}blockquote{border-left:3px solid #667eea;padding-left:12px;color:#666}</style></head><body>'+html+'</body></html>';
+    dl(full,(title||'chat')+'-'+new Date().toISOString().replace(/[:.]/g,'-').slice(0,19)+'.html','text/html');
+    toast('✅ HTML 已导出（'+count+' 条）');
+}
+
+/* ★ 真 Word（docx.js，带完整格式） */
+async function eDocx(){
+    if(typeof Exporter==='undefined'){toast('导出引擎未加载，请刷新页面','er');return;}
+    const sections=buildExportSections();
+    if(!sections.length){toast('请至少勾选一条消息','er');return;}
+    const c=curChat();
+    toast('⏳ 正在生成 Word（首次需下载组件，约2秒）...');
+    try{
+        await Exporter.exportDocx(sections,c?c.title:'对话记录');
+        toast('✅ Word 已导出（'+sections.length+' 条）');
+    }catch(e){
+        toast('Word 导出失败：'+e.message,'er');
+    }
+}
+
+/* ★ PDF */
+async function ePdf(){
+    if(typeof Exporter==='undefined'){toast('导出引擎未加载，请刷新页面','er');return;}
+    const {html,title,count}=buildExportContent();
+    if(!count){toast('请至少勾选一条消息','er');return;}
+    toast('⏳ 正在生成 PDF（内容多会慢一些）...');
+    try{
+        await Exporter.exportPdf(html,title);
+        toast('✅ PDF 已导出（'+count+' 条）');
+    }catch(e){
+        toast('PDF 导出失败：'+e.message,'er');
+    }
+}
 function cpExp(){const ta=document.getElementById('expTA');if(!ta||!ta.value){toast('无内容','er');return;}ta.select();try{document.execCommand('copy');toast('✅ 已复制');}catch(e){navigator.clipboard.writeText(ta.value).then(()=>toast('✅ 已复制'));}}
 
 /* ===== 初始化 ===== */
