@@ -1,14 +1,20 @@
-/* ===== 飞凡AI - 超管后台 (v3.1.0 批次1：引擎类型) ===== */
+/* ===== 飞凡AI - 超管后台 (v3.2.0 批次2：分支/拖拽/快捷档) ===== */
 
 const Admin = (function () {
 
+    /* ---------- 模块级状态（★全部提到顶部，避免 TDZ） ---------- */
     let _curTab = 'users';
     let _presetData = null;
-    let _curPresetIdx = -1;       // 当前编辑的预设索引
-    let _openSteps = {};          // 步骤折叠状态
-    let _presetDirty = false;     // 未保存标记
+    let _curPresetIdx = -1;        // 当前编辑的预设索引
+    let _openSteps = {};           // 步骤折叠状态
+    let _presetDirty = false;      // 未保存标记
     let _usersCache = [];
-    let _stepSel = {};            // 步骤勾选（用于拆分）
+    let _stepSel = {};             // 步骤勾选（用于拆分）
+    let _curVar = {};              // ★ 每个步骤当前选中的版本id：{ stepIdx: variantId }
+    let _quickModelDraft = [];     // ★ 快捷模型档草稿
+    let _dragStepIdx = null;       // ★ 拖拽中的步骤索引
+
+    const DEFAULT_VID = '__default__';
 
     async function apiCall(path, method, body) {
         const token = (typeof Auth !== 'undefined' && Auth.getToken()) ? Auth.getToken() : '';
@@ -72,7 +78,11 @@ const Admin = (function () {
         return Math.floor(d / 86400000) + '天前';
     }
 
-    /* ========== 账号管理 ========== */
+    function _rid(pfx) { return pfx + Math.random().toString(36).slice(2, 8); }
+
+    /* ========================================================== */
+    /* ===================== 账号管理 =========================== */
+    /* ========================================================== */
     async function renderUsers(box) {
         box.innerHTML = '<div style="color:var(--text2);padding:20px;text-align:center">加载中...</div>';
         try { const data = await apiCall('admin/users/list'); _usersCache = data.users || []; drawUsersTable(box, ''); }
@@ -80,7 +90,8 @@ const Admin = (function () {
     }
 
     function drawUsersTable(box, kw) {
-        kw = (kw || '').toLowerCase(); let users = _usersCache;
+        kw = (kw || '').toLowerCase();
+        let users = _usersCache;
         if (kw) users = users.filter(u => (u.username + ' ' + (u.name || '')).toLowerCase().includes(kw));
         let html = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
             <button class="btn btn-p btn-s" onclick="Admin.showCreateUser()">➕ 新增账号</button>
@@ -111,7 +122,9 @@ const Admin = (function () {
     async function exportXLSX(withKey) { if (withKey && !confirm('⚠️ 导出含明文Key，妥善保管！继续？')) return; try { await loadXLSX(); const res = await apiCall('admin/users/export?withkey=' + (withKey ? '1' : '0')); const ws = XLSX.utils.json_to_sheet(res.rows || [], { header: ['姓名', '账号', '密码', '角色', '引擎名称', '协议', 'BaseURL', 'APIKey', '模型', '输入单价', '输出单价', '缓存读单价', '缓存写单价'] }); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, '账号'); XLSX.writeFile(wb, 'feifan-accounts-' + (withKey ? 'withkey-' : '') + new Date().toISOString().slice(0, 10) + '.xlsx'); toast('✅ 已导出'); } catch (e) { toast('导出失败：' + e.message, 'er'); } }
     async function downloadTemplate() { try { await loadXLSX(); const rows = [{ 姓名: '张三', 账号: 'zhangsan', 密码: 'pass123', 角色: 'user', 引擎名称: '快速引擎', 协议: 'openai', BaseURL: 'https://api.openai-proxy.org/v1', APIKey: 'sk-xxx', 模型: '', 输入单价: '', 输出单价: '', 缓存读单价: '', 缓存写单价: '' }, { 姓名: '李四', 账号: 'lisi', 密码: 'pass456', 角色: 'user', 引擎名称: '便宜', 协议: 'openai', BaseURL: 'https://api.openai-proxy.org/v1', APIKey: 'sk-ds', 模型: '', 输入单价: '', 输出单价: '', 缓存读单价: '', 缓存写单价: '' }]; const ws = XLSX.utils.json_to_sheet(rows, { header: ['姓名', '账号', '密码', '角色', '引擎名称', '协议', 'BaseURL', 'APIKey', '模型', '输入单价', '输出单价', '缓存读单价', '缓存写单价'] }); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, '账号'); XLSX.writeFile(wb, 'feifan-账号导入模板.xlsx'); toast('✅ 模板已下载'); } catch (e) { toast('生成模板失败：' + e.message, 'er'); } }
 
-    /* ========== 引擎管理（★批次1：引擎类型 + 🎨标记 + 自动识别） ========== */
+    /* ========================================================== */
+    /* ===================== 引擎管理 =========================== */
+    /* ========================================================== */
     async function renderEngines(box) {
         box.innerHTML = '<div style="color:var(--text2);padding:20px;text-align:center">加载中...</div>';
         try {
@@ -185,7 +198,6 @@ const Admin = (function () {
             <div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-p" onclick='Admin.saveEng(${JSON.stringify(username)},${JSON.stringify(e ? e.id : "")})'>💾 保存</button><button class="btn" onclick="Admin.switchTab('engines')">取消</button></div></div>`;
     }
 
-    /* 输入模型名时智能推断引擎类型（含生图关键词则自动切到生图） */
     function autoDetectEngType() {
         const modelEl = document.getElementById('ee_model');
         const etEl = document.getElementById('ee_etype');
@@ -221,13 +233,25 @@ const Admin = (function () {
 
     function delEng(id) { if (!confirm('删除这个引擎？')) return; apiCall('admin/engines/delete', 'POST', { id }).then(() => { toast('✅ 已删除'); switchTab('engines'); }).catch(e => toast('失败：' + e.message, 'er')); }
 
-    /* ========== 模型库 ========== */
+    /* ========================================================== */
+    /* ====================== 模型库 ============================ */
+    /* ========================================================== */
     async function renderModels(box) { box.innerHTML = '<div style="color:var(--text2);padding:20px;text-align:center">加载中...</div>'; try { const data = await apiCall('admin/models/list'); const models = data.models || []; let html = `<div style="display:flex;gap:8px;margin-bottom:12px"><button class="btn btn-p btn-s" onclick="Admin.showModelEdit('')">➕ 新增模型</button><button class="btn btn-s" onclick="Admin.switchTab('models')">🔄 刷新</button></div><div style="font-size:12px;color:var(--text2);margin-bottom:8px">模型库：配各模型单价（美元/1M token）。引擎未指定单价时自动查这里。</div><div style="overflow-x:auto"><table class="admin-table"><thead><tr><th>模型名</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存写</th><th>操作</th></tr></thead><tbody>`; models.forEach(m => { html += `<tr><td>${esc(m.model_name)}</td><td>${m.price_in}</td><td>${m.price_out}</td><td>${m.price_cache_read}</td><td>${m.price_cache_write}</td><td class="admin-ops"><button onclick='Admin.showModelEdit(${JSON.stringify(m.model_name)})'>✏️</button><button onclick='Admin.delModel(${JSON.stringify(m.model_name)})' style="color:#ef4444">🗑️</button></td></tr>`; }); html += '</tbody></table></div>'; box.innerHTML = html; box._models = models; } catch (e) { box.innerHTML = '<div style="color:#ef4444;padding:20px">加载失败：' + e.message + '</div>'; } }
     function showModelEdit(modelName) { const box = document.getElementById('adminBody'); const models = (box && box._models) || []; const m = modelName ? models.find(x => x.model_name === modelName) : null; box.innerHTML = `<div style="max-width:460px"><h3 style="margin-bottom:12px">${m ? '✏️ 编辑' : '➕ 新增'}模型单价</h3><div class="fg"><label>模型名 ${m ? '（不可改）' : ''}</label><input id="mm_name" value="${m ? esc(m.model_name) : ''}" ${m ? 'disabled' : ''} placeholder="如 gpt-4o"></div><div class="fr"><div class="fg"><label>输入</label><input id="mm_pi" type="number" step="0.01" value="${m ? m.price_in : 0}"></div><div class="fg"><label>输出</label><input id="mm_po" type="number" step="0.01" value="${m ? m.price_out : 0}"></div></div><div class="fr"><div class="fg"><label>缓存读</label><input id="mm_pcr" type="number" step="0.01" value="${m ? m.price_cache_read : 0}"></div><div class="fg"><label>缓存写</label><input id="mm_pcw" type="number" step="0.01" value="${m ? m.price_cache_write : 0}"></div></div><div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-p" onclick='Admin.saveModel(${JSON.stringify(m ? m.model_name : "")})'>💾 保存</button><button class="btn" onclick="Admin.switchTab('models')">取消</button></div></div>`; }
     function saveModel(existName) { const g = (id) => { const el = document.getElementById(id); return el ? el.value : ''; }; const name = existName || g('mm_name').trim(); if (!name) { toast('模型名必填', 'er'); return; } apiCall('admin/models/save', 'POST', { model_name: name, priceIn: parseFloat(g('mm_pi')) || 0, priceOut: parseFloat(g('mm_po')) || 0, priceCR: parseFloat(g('mm_pcr')) || 0, priceCW: parseFloat(g('mm_pcw')) || 0 }).then(() => { toast('✅ 已保存'); switchTab('models'); }).catch(e => toast('失败：' + e.message, 'er')); }
     function delModel(name) { if (!confirm('删除模型【' + name + '】单价？')) return; apiCall('admin/models/delete', 'POST', { model_name: name }).then(() => { toast('✅ 已删除'); switchTab('models'); }).catch(e => toast('失败：' + e.message, 'er')); }
 
-    /* ========== 预设管理（左右分栏+折叠） ========== */
+    /* ========================================================== */
+    /* ==================== 预设管理（含分支） =================== */
+    /* ========================================================== */
+
+    /* 遍历一个步骤的所有片段集合（默认版 + 全部分支），callback(segArr) */
+    function _eachSegGroup(step, cb) {
+        if (!step) return;
+        cb(step.segments || []);
+        (step.variants || []).forEach(v => cb(v.segments || []));
+    }
+
     async function renderPresets(box) {
         box.innerHTML = '<div style="color:var(--text2);padding:20px;text-align:center">加载中（解密明文）...</div>';
         try {
@@ -240,26 +264,34 @@ const Admin = (function () {
             _presetData = JSON.parse(JSON.stringify(data));
             if (!Array.isArray(_presetData.groups)) _presetData.groups = [];
 
+            /* ★ 递归解密：默认版 + 全部分支 */
             if (typeof Workflow !== 'undefined' && Workflow.decrypt) {
-                for (const p of (_presetData.presets || []))
-                    for (const s of (p.steps || []))
-                        for (const seg of (s.segments || []))
-                            if (seg.type === 'prompt') {
-                                try { seg._plain = await Workflow.decrypt(seg.hidden || ''); }
-                                catch (e) { seg._plain = '（解密失败）'; }
+                for (const p of (_presetData.presets || [])) {
+                    for (const s of (p.steps || [])) {
+                        const groups = [s.segments || []];
+                        (s.variants || []).forEach(v => groups.push(v.segments || []));
+                        for (const segs of groups) {
+                            for (const seg of segs) {
+                                if (seg.type === 'prompt') {
+                                    try { seg._plain = await Workflow.decrypt(seg.hidden || ''); }
+                                    catch (e) { seg._plain = '（解密失败）'; }
+                                }
                             }
+                        }
+                    }
+                }
             }
             _presetDirty = false;
             _curPresetIdx = (_presetData.presets && _presetData.presets.length) ? 0 : -1;
             _openSteps = {};
             _stepSel = {};
+            _curVar = {};
             drawPresetLayout(box);
         } catch (e) {
             box.innerHTML = '<div style="color:#ef4444;padding:20px">加载失败：' + e.message + '</div>';
         }
     }
 
-    /* 左右分栏布局 */
     function drawPresetLayout(box) {
         box.innerHTML = `<div class="preset-layout">
             <div class="preset-left">
@@ -289,32 +321,39 @@ const Admin = (function () {
         let html = '';
         (_presetData.presets || []).forEach((p, i) => {
             if (kw && !(p.name || '').toLowerCase().includes(kw)) return;
-            html += `<div class="preset-litem${i === _curPresetIdx ? ' act' : ''}" onclick="Admin.selectPreset(${i})"><div class="pl-name">${esc(p.name || '未命名')}</div><div class="pl-meta">${esc(p.group || '无分组')} · ${(p.steps || []).length}步</div></div>`;
+            const hasBranch = (p.steps || []).some(s => Array.isArray(s.variants) && s.variants.length);
+            html += `<div class="preset-litem${i === _curPresetIdx ? ' act' : ''}" onclick="Admin.selectPreset(${i})"><div class="pl-name">${esc(p.name || '未命名')}</div><div class="pl-meta">${esc(p.group || '无分组')} · ${(p.steps || []).length}步${hasBranch ? ' · 含分支' : ''}</div></div>`;
         });
         scroll.innerHTML = html || '<div style="font-size:12px;color:var(--text2);padding:10px;text-align:center">无预设</div>';
     }
 
     function filterPresetList() { drawPresetList(); }
-    function selectPreset(i) { _curPresetIdx = i; _openSteps = {}; _stepSel = {}; drawPresetList(); drawPresetEditor(); }
+    function selectPreset(i) { _curPresetIdx = i; _openSteps = {}; _stepSel = {}; _curVar = {}; drawPresetList(); drawPresetEditor(); }
     function markDirty() { _presetDirty = true; const t = document.getElementById('presetDirtyTip'); if (t) t.textContent = '● 有未保存修改'; }
 
-    /* 片段概要小标签 */
-    function _segSummary(steps) {
-        let p = 0, inp = 0, bl = 0;
-        (steps || []).forEach(s => (s.segments || []).forEach(seg => {
-            if (seg.type === 'prompt') p++;
-            else if (seg.type === 'input') inp++;
-            else if (seg.type === 'blank') bl++;
-        }));
-        const arr = [];
-        if (p) arr.push(p + '隐藏');
-        if (inp) arr.push(inp + '输入');
-        if (bl) arr.push(bl + '填空');
-        return arr.join('/') || '空';
+    /* 当前步骤选中的版本id（默认=默认版） */
+    function _vidOf(si) { return _curVar[si] || DEFAULT_VID; }
+
+    /* 取某步骤某版本的片段数组引用（可直接修改） */
+    function _segsRef(si, vid) {
+        const s = _presetData.presets[_curPresetIdx].steps[si];
+        if (!vid || vid === DEFAULT_VID) {
+            if (!Array.isArray(s.segments)) s.segments = [];
+            return s.segments;
+        }
+        const v = (s.variants || []).find(x => x.id === vid);
+        if (!v) {
+            if (!Array.isArray(s.segments)) s.segments = [];
+            return s.segments;
+        }
+        if (!Array.isArray(v.segments)) v.segments = [];
+        return v.segments;
     }
-    function _oneStepSummary(s) {
+
+    /* 片段概要（用于步骤条） */
+    function _segsSummary(segs) {
         let p = 0, inp = 0, bl = 0;
-        (s.segments || []).forEach(seg => {
+        (segs || []).forEach(seg => {
             if (seg.type === 'prompt') p++;
             else if (seg.type === 'input') inp++;
             else if (seg.type === 'blank') bl++;
@@ -346,16 +385,29 @@ const Admin = (function () {
             <select onchange="Admin.updP(${pi},'group',this.value)" style="width:140px">${groupOpts}</select>
             <button class="btn btn-s" onclick="Admin.dupPreset(${pi})" title="复制整个预设">📄 复制</button>
             <button class="btn btn-s btn-d" onclick="Admin.delPreset(${pi})">🗑️ 删预设</button>
-        </div><div class="preset-steps">`;
+        </div>
+        <div style="font-size:11px;color:var(--text2);margin-bottom:8px">💡 拖动 ⣿ 可排序步骤；步骤内可建 A/B 版本（最多3个），用户端自选</div>
+        <div class="preset-steps" id="presetStepsBox">`;
 
         (p.steps || []).forEach((s, si) => {
             const open = !!_openSteps[si];
-            const summary = _oneStepSummary(s);
-            html += `<div class="pstep${open ? ' open' : ''}">
+            const vid = _vidOf(si);
+            const curSegs = _segsRef(si, vid);
+            const summary = _segsSummary(curSegs);
+            const varCount = (s.variants || []).length;
+
+            html += `<div class="pstep${open ? ' open' : ''}" draggable="true"
+                    ondragstart="Admin.stepDragStart(event,${si})"
+                    ondragover="Admin.stepDragOver(event,${si})"
+                    ondragleave="Admin.stepDragLeave(event,${si})"
+                    ondrop="Admin.stepDrop(event,${si})"
+                    ondragend="Admin.stepDragEnd(event)">
                 <div class="pstep-bar" onclick="Admin.toggleStep(${si})">
+                    <span class="pstep-drag" onclick="event.stopPropagation()" title="拖动排序">⣿</span>
                     <input type="checkbox" onclick="event.stopPropagation()" onchange="Admin.toggleStepSel(${si},this.checked)" ${_stepSel[si] ? 'checked' : ''} title="勾选后可拆分为新预设" style="flex-shrink:0">
                     <span class="pstep-caret">${open ? '▼' : '▶'}</span>
                     <span class="pstep-title">步骤${si + 1}：${esc(s.name || '未命名')}</span>
+                    ${varCount ? '<span style="font-size:10px;color:#f59e0b;flex-shrink:0">🔀' + (varCount + 1) + '版</span>' : ''}
                     ${summary ? '<span style="font-size:10px;color:var(--text2);flex-shrink:0">' + summary + '</span>' : ''}
                     ${s.engineName ? '<span style="font-size:10px;color:var(--pri)">🔌' + esc(s.engineName) + '</span>' : ''}
                     <span class="pstep-ops" onclick="event.stopPropagation()">
@@ -367,8 +419,12 @@ const Admin = (function () {
                 </div>
                 <div class="pstep-body">
                     <div class="fr"><div class="fg"><label>步骤名</label><input value="${esc(s.name || '')}" onchange="Admin.updS(${si},'name',this.value)"></div><div class="fg"><label>绑定引擎名(选填)</label><input value="${esc(s.engineName || '')}" onchange="Admin.updS(${si},'engineName',this.value)" placeholder="该步自动用此公有引擎"></div></div>
+
+                    ${_renderVariantTabs(si, s, vid)}
+
                     <div class="seg-list">`;
-            (s.segments || []).forEach((seg, gi) => {
+
+            curSegs.forEach((seg, gi) => {
                 if (seg.type === 'prompt') {
                     const wc = (typeof cntW === 'function') ? cntW(seg._plain || '') : (seg._plain || '').length;
                     html += `<div class="seg-item seg-prompt"><div class="seg-label">🔒隐藏指令（明文，保存自动加密）<span style="color:var(--text2);float:right">${wc} 字</span></div><textarea class="seg-prompt-ta" onchange="Admin.updSegPrompt(${si},${gi},this.value)" placeholder="隐藏指令明文">${esc(seg._plain || '')}</textarea><button class="btn btn-s btn-d" onclick="Admin.delSeg(${si},${gi})">删</button></div>`;
@@ -376,6 +432,7 @@ const Admin = (function () {
                 else if (seg.type === 'input') html += `<div class="seg-item seg-input"><div class="seg-label">✍️输入框</div><input value="${esc(seg.placeholder || '')}" onchange="Admin.updSeg(${si},${gi},'placeholder',this.value)" placeholder="提示文字"><input value="${esc(seg.defaultValue || '')}" onchange="Admin.updSeg(${si},${gi},'defaultValue',this.value)" placeholder="默认值"><button class="btn btn-s btn-d" onclick="Admin.delSeg(${si},${gi})">删</button></div>`;
                 else if (seg.type === 'blank') html += `<div class="seg-item seg-blank"><div class="seg-label">📝填空题（{}=空位）</div><input value="${esc(seg.template || '')}" onchange="Admin.updSeg(${si},${gi},'template',this.value)" placeholder="如：题材是{}，视角是{}"><button class="btn btn-s btn-d" onclick="Admin.delSeg(${si},${gi})">删</button></div>`;
             });
+
             html += `</div><div style="display:flex;gap:4px;margin-top:6px"><button class="btn btn-s" onclick="Admin.addSeg(${si},'prompt')">+隐藏指令</button><button class="btn btn-s" onclick="Admin.addSeg(${si},'input')">+输入框</button><button class="btn btn-s" onclick="Admin.addSeg(${si},'blank')">+填空题</button></div></div></div>`;
         });
 
@@ -387,18 +444,118 @@ const Admin = (function () {
         right.innerHTML = html;
     }
 
+    /* ---------- 版本标签页 ---------- */
+    function _renderVariantTabs(si, step, curVid) {
+        const vars = (step.variants || []);
+        const total = 1 + vars.length;
+        let html = '<div class="pv-tabs"><span class="pv-lbl">🔀 版本：</span>';
+
+        /* 默认版 */
+        const dLabel = step.defaultLabel || '默认';
+        const dAct = (curVid === DEFAULT_VID) ? ' act' : '';
+        html += `<span class="pv-tab${dAct}" onclick="Admin.selVariant(${si},'${DEFAULT_VID}')" title="点击切换；双击改名" ondblclick="Admin.renameDefaultVar(${si})">${esc(dLabel)}</span>`;
+
+        /* 分支版 */
+        vars.forEach(v => {
+            const act = (curVid === v.id) ? ' act' : '';
+            html += `<span class="pv-tab${act}" onclick="Admin.selVariant(${si},${JSON.stringify(v.id)})" title="点击切换；双击改名" ondblclick='Admin.renameVariant(${si},${JSON.stringify(v.id)})'>${esc(v.label || '未命名')}<button class="pv-x" onclick='event.stopPropagation();Admin.delVariant(${si},${JSON.stringify(v.id)})' title="删除此版本">×</button></span>`;
+        });
+
+        /* 新建（最多3个） */
+        if (total < 3) {
+            html += `<button class="pv-add" onclick="Admin.addVariant(${si})">+ 新建版本</button>`;
+        } else {
+            html += `<span style="font-size:10px;color:var(--text2)">（已达3版上限）</span>`;
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function selVariant(si, vid) { _curVar[si] = vid; drawPresetEditor(); }
+
+    function renameDefaultVar(si) {
+        const s = _presetData.presets[_curPresetIdx].steps[si];
+        const nv = prompt('默认版显示名（用户端看到的标签）：', s.defaultLabel || '默认');
+        if (nv === null) return;
+        s.defaultLabel = nv.trim() || '默认';
+        markDirty(); drawPresetEditor();
+    }
+
+    function addVariant(si) {
+        const s = _presetData.presets[_curPresetIdx].steps[si];
+        if (!Array.isArray(s.variants)) s.variants = [];
+        if (s.variants.length >= 2) { toast('最多 3 个版本（含默认版）', 'er'); return; }
+
+        const label = prompt('新版本名称（用户端会看到）：', 'A版');
+        if (label === null) return;
+
+        const copyFrom = confirm('从当前版本复制内容？\n✅=复制（推荐，改几处即可）\n❌=空白新建');
+        const srcSegs = copyFrom ? _segsRef(si, _vidOf(si)) : [];
+
+        const v = {
+            id: _rid('v_'),
+            label: label.trim() || ('版本' + (s.variants.length + 1)),
+            segments: JSON.parse(JSON.stringify(srcSegs || [])),
+        };
+        s.variants.push(v);
+        _curVar[si] = v.id;
+        markDirty(); drawPresetList(); drawPresetEditor();
+        toast('✅ 已新建版本「' + v.label + '」');
+    }
+
+    function renameVariant(si, vid) {
+        const s = _presetData.presets[_curPresetIdx].steps[si];
+        const v = (s.variants || []).find(x => x.id === vid);
+        if (!v) return;
+        const nv = prompt('重命名版本：', v.label || '');
+        if (nv === null) return;
+        v.label = nv.trim() || v.label;
+        markDirty(); drawPresetEditor();
+    }
+
+    function delVariant(si, vid) {
+        const s = _presetData.presets[_curPresetIdx].steps[si];
+        const v = (s.variants || []).find(x => x.id === vid);
+        if (!v) return;
+        if (!confirm('删除版本「' + (v.label || '') + '」？该版本的所有片段会一起删除。')) return;
+        s.variants = (s.variants || []).filter(x => x.id !== vid);
+        if (_curVar[si] === vid) _curVar[si] = DEFAULT_VID;
+        markDirty(); drawPresetList(); drawPresetEditor();
+        toast('已删除版本');
+    }
+
+    /* ---------- 片段编辑（自动作用于当前选中版本） ---------- */
     function updP(pi, f, v) { _presetData.presets[pi][f] = v; markDirty(); if (f === 'name' || f === 'group') drawPresetList(); }
     function updS(si, f, v) { _presetData.presets[_curPresetIdx].steps[si][f] = v; markDirty(); }
-    function updSeg(si, gi, f, v) { _presetData.presets[_curPresetIdx].steps[si].segments[gi][f] = v; markDirty(); }
-    function updSegPrompt(si, gi, v) { const seg = _presetData.presets[_curPresetIdx].steps[si].segments[gi]; seg._plain = v; seg._dirty = true; markDirty(); drawPresetEditor(); }
+    function updSeg(si, gi, f, v) { const segs = _segsRef(si, _vidOf(si)); if (segs[gi]) segs[gi][f] = v; markDirty(); }
+    function updSegPrompt(si, gi, v) {
+        const segs = _segsRef(si, _vidOf(si));
+        if (!segs[gi]) return;
+        segs[gi]._plain = v;
+        segs[gi]._dirty = true;
+        markDirty();
+        drawPresetEditor();
+    }
+    function addSeg(si, type) {
+        const seg = { type };
+        if (type === 'prompt') { seg.hidden = ''; seg._plain = ''; seg._dirty = true; }
+        else if (type === 'input') { seg.placeholder = '请输入...'; seg.defaultValue = ''; }
+        else if (type === 'blank') { seg.template = ''; }
+        _segsRef(si, _vidOf(si)).push(seg);
+        markDirty(); drawPresetEditor();
+    }
+    function delSeg(si, gi) { _segsRef(si, _vidOf(si)).splice(gi, 1); markDirty(); drawPresetEditor(); }
+
     function toggleStep(si) { _openSteps[si] = !_openSteps[si]; drawPresetEditor(); }
     function toggleStepSel(si, checked) { _stepSel[si] = checked; }
 
+    /* ---------- 预设 增删复制 ---------- */
     function addPreset() {
-        const p = { id: 'p' + Math.random().toString(36).slice(2, 8), name: '新预设', group: '', steps: [] };
+        const p = { id: _rid('p'), name: '新预设', group: '', steps: [] };
         _presetData.presets.push(p);
         _curPresetIdx = _presetData.presets.length - 1;
-        _openSteps = {}; _stepSel = {};
+        _openSteps = {}; _stepSel = {}; _curVar = {};
         markDirty(); drawPresetList(); drawPresetEditor();
     }
 
@@ -406,41 +563,135 @@ const Admin = (function () {
         const src = _presetData.presets[pi];
         if (!src) return;
         const copy = JSON.parse(JSON.stringify(src));
-        copy.id = 'p' + Math.random().toString(36).slice(2, 8);
+        copy.id = _rid('p');
         copy.name = (src.name || '未命名') + ' 副本';
-        (copy.steps || []).forEach(s => { s.id = 's' + Math.random().toString(36).slice(2, 8); });
+        /* ★ 重生成步骤id + 全部 variant id */
+        (copy.steps || []).forEach(s => {
+            s.id = _rid('s');
+            (s.variants || []).forEach(v => { v.id = _rid('v_'); });
+        });
         _presetData.presets.splice(pi + 1, 0, copy);
         _curPresetIdx = pi + 1;
-        _openSteps = {}; _stepSel = {};
+        _openSteps = {}; _stepSel = {}; _curVar = {};
         markDirty(); drawPresetList(); drawPresetEditor();
         toast('✅ 已复制预设');
     }
 
-    function delPreset(pi) { if (!confirm('删除此预设？')) return; _presetData.presets.splice(pi, 1); _curPresetIdx = _presetData.presets.length ? 0 : -1; _openSteps = {}; _stepSel = {}; markDirty(); drawPresetList(); drawPresetEditor(); }
+    function delPreset(pi) {
+        if (!confirm('删除此预设？')) return;
+        _presetData.presets.splice(pi, 1);
+        _curPresetIdx = _presetData.presets.length ? 0 : -1;
+        _openSteps = {}; _stepSel = {}; _curVar = {};
+        markDirty(); drawPresetList(); drawPresetEditor();
+    }
 
-    function addStep() { const p = _presetData.presets[_curPresetIdx]; if (!p.steps) p.steps = []; p.steps.push({ id: 's' + Math.random().toString(36).slice(2, 8), name: '新步骤', order: p.steps.length + 1, segments: [] }); _openSteps[p.steps.length - 1] = true; markDirty(); drawPresetList(); drawPresetEditor(); }
+    /* ---------- 步骤 增删复制移动 ---------- */
+    function addStep() {
+        const p = _presetData.presets[_curPresetIdx];
+        if (!p.steps) p.steps = [];
+        p.steps.push({ id: _rid('s'), name: '新步骤', order: p.steps.length + 1, segments: [] });
+        _openSteps[p.steps.length - 1] = true;
+        markDirty(); drawPresetList(); drawPresetEditor();
+    }
 
     function dupStep(si) {
         const p = _presetData.presets[_curPresetIdx];
         const src = p.steps[si];
         if (!src) return;
         const copy = JSON.parse(JSON.stringify(src));
-        copy.id = 's' + Math.random().toString(36).slice(2, 8);
+        copy.id = _rid('s');
         copy.name = (src.name || '未命名') + ' 副本';
+        /* ★ 重生成 variant id，避免共用 */
+        (copy.variants || []).forEach(v => { v.id = _rid('v_'); });
         p.steps.splice(si + 1, 0, copy);
         p.steps.forEach((s, i) => s.order = i + 1);
-        const newOpen = {};
-        Object.keys(_openSteps).forEach(k => { const ki = parseInt(k, 10); newOpen[ki > si ? ki + 1 : ki] = _openSteps[k]; });
-        newOpen[si + 1] = true;
-        _openSteps = newOpen; _stepSel = {};
+        _remapStepIdxState(si, si + 1, 'insert');
+        _openSteps[si + 1] = true;
         markDirty(); drawPresetEditor();
         toast('✅ 已复制步骤');
     }
 
-    function delStep(si) { if (!confirm('删除此步骤？')) return; _presetData.presets[_curPresetIdx].steps.splice(si, 1); _presetData.presets[_curPresetIdx].steps.forEach((s, i) => s.order = i + 1); _stepSel = {}; markDirty(); drawPresetList(); drawPresetEditor(); }
-    function moveStep(si, dir) { const steps = _presetData.presets[_curPresetIdx].steps; const j = si + dir; if (j < 0 || j >= steps.length) return; const t = steps[si]; steps[si] = steps[j]; steps[j] = t; steps.forEach((s, i) => s.order = i + 1); const to = _openSteps[si], tj = _openSteps[j]; _openSteps[si] = tj; _openSteps[j] = to; markDirty(); drawPresetEditor(); }
+    function delStep(si) {
+        if (!confirm('删除此步骤？')) return;
+        const p = _presetData.presets[_curPresetIdx];
+        p.steps.splice(si, 1);
+        p.steps.forEach((s, i) => s.order = i + 1);
+        _openSteps = {}; _stepSel = {}; _curVar = {};
+        markDirty(); drawPresetList(); drawPresetEditor();
+    }
 
-    /* 勾选的步骤 → 另存为新预设 */
+    function moveStep(si, dir) {
+        const steps = _presetData.presets[_curPresetIdx].steps;
+        const j = si + dir;
+        if (j < 0 || j >= steps.length) return;
+        const t = steps[si]; steps[si] = steps[j]; steps[j] = t;
+        steps.forEach((s, i) => s.order = i + 1);
+        _swapStepIdxState(si, j);
+        markDirty(); drawPresetEditor();
+    }
+
+    /* 索引态交换（折叠/勾选/版本选择） */
+    function _swapStepIdxState(a, b) {
+        [_openSteps, _stepSel, _curVar].forEach(map => {
+            const ta = map[a], tb = map[b];
+            if (tb === undefined) delete map[a]; else map[a] = tb;
+            if (ta === undefined) delete map[b]; else map[b] = ta;
+        });
+    }
+    /* 插入/删除时整体后移（简化：插入后清空，避免错位） */
+    function _remapStepIdxState(from, to, mode) {
+        _openSteps = {}; _stepSel = {}; _curVar = {};
+    }
+
+    /* ---------- 步骤拖拽排序 ---------- */
+    function stepDragStart(ev, si) {
+        _dragStepIdx = si;
+        const el = ev.currentTarget;
+        el.classList.add('dragging');
+        try {
+            ev.dataTransfer.effectAllowed = 'move';
+            ev.dataTransfer.setData('text/plain', String(si));
+        } catch (e) {}
+    }
+    function stepDragOver(ev, si) {
+        if (_dragStepIdx === null || _dragStepIdx === si) return;
+        ev.preventDefault();
+        try { ev.dataTransfer.dropEffect = 'move'; } catch (e) {}
+        ev.currentTarget.classList.add('drag-over');
+    }
+    function stepDragLeave(ev, si) {
+        ev.currentTarget.classList.remove('drag-over');
+    }
+    function stepDrop(ev, si) {
+        ev.preventDefault();
+        ev.currentTarget.classList.remove('drag-over');
+        let from = _dragStepIdx;
+        if (from === null) {
+            const raw = ev.dataTransfer ? ev.dataTransfer.getData('text/plain') : '';
+            from = raw === '' ? null : parseInt(raw, 10);
+        }
+        if (from === null || isNaN(from) || from === si) { _dragStepIdx = null; return; }
+
+        const steps = _presetData.presets[_curPresetIdx].steps;
+        const moved = steps.splice(from, 1)[0];
+        steps.splice(si, 0, moved);
+        steps.forEach((s, i) => s.order = i + 1);
+
+        /* 拖拽后索引全乱，直接重置折叠/勾选/版本态 */
+        _openSteps = {}; _stepSel = {}; _curVar = {};
+        _dragStepIdx = null;
+        markDirty(); drawPresetEditor();
+        toast('✅ 已重新排序');
+    }
+    function stepDragEnd(ev) {
+        _dragStepIdx = null;
+        document.querySelectorAll('.pstep').forEach(el => {
+            el.classList.remove('dragging');
+            el.classList.remove('drag-over');
+        });
+    }
+
+    /* ---------- 勾选步骤 → 另存为新预设 ---------- */
     function stepsToNewPreset() {
         const p = _presetData.presets[_curPresetIdx];
         const picked = (p.steps || []).filter((s, i) => _stepSel[i]);
@@ -448,22 +699,24 @@ const Admin = (function () {
         const name = prompt('新预设名称：', (p.name || '') + ' - 拆分');
         if (name === null) return;
         const np = {
-            id: 'p' + Math.random().toString(36).slice(2, 8),
+            id: _rid('p'),
             name: name.trim() || '拆分预设',
             group: p.group || '',
             steps: JSON.parse(JSON.stringify(picked)),
         };
-        np.steps.forEach((s, i) => { s.id = 's' + Math.random().toString(36).slice(2, 8); s.order = i + 1; });
+        /* ★ 重生成步骤id + variant id */
+        np.steps.forEach((s, i) => {
+            s.id = _rid('s');
+            s.order = i + 1;
+            (s.variants || []).forEach(v => { v.id = _rid('v_'); });
+        });
         _presetData.presets.push(np);
         _stepSel = {};
         markDirty(); drawPresetList(); drawPresetEditor();
         toast('✅ 已拆分为新预设「' + np.name + '」（共 ' + picked.length + ' 步）');
     }
 
-    function addSeg(si, type) { const seg = { type }; if (type === 'prompt') { seg.hidden = ''; seg._plain = ''; seg._dirty = true; } else if (type === 'input') { seg.placeholder = '请输入...'; seg.defaultValue = ''; } else if (type === 'blank') { seg.template = ''; } _presetData.presets[_curPresetIdx].steps[si].segments.push(seg); markDirty(); drawPresetEditor(); }
-    function delSeg(si, gi) { _presetData.presets[_curPresetIdx].steps[si].segments.splice(gi, 1); markDirty(); drawPresetEditor(); }
-
-    /* ===== 分组管理 ===== */
+    /* ---------- 分组管理 ---------- */
     function manageGroups() {
         if (!_presetData.groups) _presetData.groups = [];
         const right = document.getElementById('presetRight');
@@ -511,7 +764,7 @@ const Admin = (function () {
         markDirty(); manageGroups(); drawPresetList();
     }
 
-    /* ===== 安全设置 ===== */
+    /* ---------- 安全设置 ---------- */
     function showSecurity() {
         const sec = _presetData.security || {};
         const right = document.getElementById('presetRight');
@@ -537,18 +790,30 @@ const Admin = (function () {
         toast('已应用，记得点"💾 保存到云端"');
     }
 
+    /* ---------- 保存 / 导出 / 导入（★递归处理分支） ---------- */
     async function savePresets() {
         toast('加密并保存中...');
         try {
-            for (const p of _presetData.presets)
-                for (const s of (p.steps || []))
-                    for (const seg of (s.segments || []))
-                        if (seg.type === 'prompt') {
-                            if (typeof Workflow !== 'undefined' && Workflow.encrypt) seg.hidden = await Workflow.encrypt(seg._plain || '');
-                            else seg.hidden = '__PLAIN__' + (seg._plain || '');
+            /* ① 加密所有隐藏指令（默认版 + 全部分支） */
+            for (const p of _presetData.presets) {
+                for (const s of (p.steps || [])) {
+                    const groups = [s.segments || []];
+                    (s.variants || []).forEach(v => groups.push(v.segments || []));
+                    for (const segs of groups) {
+                        for (const seg of segs) {
+                            if (seg.type === 'prompt') {
+                                if (typeof Workflow !== 'undefined' && Workflow.encrypt) seg.hidden = await Workflow.encrypt(seg._plain || '');
+                                else seg.hidden = '__PLAIN__' + (seg._plain || '');
+                            }
                         }
+                    }
+                }
+            }
+
+            /* ② 深拷贝后递归清理明文（🔴 安全红线） */
             const clean = JSON.parse(JSON.stringify(_presetData));
-            clean.presets.forEach(p => (p.steps || []).forEach(s => (s.segments || []).forEach(seg => { delete seg._plain; delete seg._dirty; })));
+            _stripPlain(clean);
+
             await apiCall('admin/presets/save', 'POST', { presets: clean });
             _presetDirty = false;
             const t = document.getElementById('presetDirtyTip');
@@ -560,28 +825,196 @@ const Admin = (function () {
         }
     }
 
-    function exportPresetsJSON() { const clean = JSON.parse(JSON.stringify(_presetData)); clean.presets.forEach(p => (p.steps || []).forEach(s => (s.segments || []).forEach(seg => { delete seg._plain; delete seg._dirty; }))); const blob = new Blob([JSON.stringify(clean, null, 2)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'presets-backup-' + new Date().toISOString().slice(0, 10) + '.json'; a.click(); URL.revokeObjectURL(a.href); toast('✅ 已导出'); }
-    function importPresetsJSON(inputEl) { const file = inputEl.files && inputEl.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = async (e) => { try { _presetData = JSON.parse(e.target.result); if (!Array.isArray(_presetData.groups)) _presetData.groups = []; if (typeof Workflow !== 'undefined' && Workflow.decrypt) { for (const p of (_presetData.presets || [])) for (const s of (p.steps || [])) for (const seg of (s.segments || [])) if (seg.type === 'prompt') { try { seg._plain = await Workflow.decrypt(seg.hidden || ''); } catch (er) { seg._plain = ''; } } } _curPresetIdx = _presetData.presets.length ? 0 : -1; _openSteps = {}; _stepSel = {}; markDirty(); drawPresetLayout(document.getElementById('adminBody')); toast('✅ 已导入（点保存生效）'); } catch (err) { toast('JSON解析失败', 'er'); } inputEl.value = ''; }; reader.readAsText(file, 'utf-8'); }
+    /* 🔴 递归剔除 _plain / _dirty（默认版 + 全部分支），绝不让明文出站 */
+    function _stripPlain(data) {
+        (data.presets || []).forEach(p => {
+            (p.steps || []).forEach(s => {
+                const groups = [s.segments || []];
+                (s.variants || []).forEach(v => groups.push(v.segments || []));
+                groups.forEach(segs => {
+                    segs.forEach(seg => { delete seg._plain; delete seg._dirty; });
+                });
+            });
+        });
+        return data;
+    }
 
-    /* ========== 监视 ========== */
+    function exportPresetsJSON() {
+        const clean = JSON.parse(JSON.stringify(_presetData));
+        _stripPlain(clean);
+        const blob = new Blob([JSON.stringify(clean, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'presets-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        toast('✅ 已导出（不含明文）');
+    }
+
+    function importPresetsJSON(inputEl) {
+        const file = inputEl.files && inputEl.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                _presetData = JSON.parse(e.target.result);
+                if (!Array.isArray(_presetData.groups)) _presetData.groups = [];
+                /* 递归解密 */
+                if (typeof Workflow !== 'undefined' && Workflow.decrypt) {
+                    for (const p of (_presetData.presets || [])) {
+                        for (const s of (p.steps || [])) {
+                            const groups = [s.segments || []];
+                            (s.variants || []).forEach(v => groups.push(v.segments || []));
+                            for (const segs of groups) {
+                                for (const seg of segs) {
+                                    if (seg.type === 'prompt') {
+                                        try { seg._plain = await Workflow.decrypt(seg.hidden || ''); }
+                                        catch (er) { seg._plain = ''; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                _curPresetIdx = _presetData.presets.length ? 0 : -1;
+                _openSteps = {}; _stepSel = {}; _curVar = {};
+                markDirty();
+                drawPresetLayout(document.getElementById('adminBody'));
+                toast('✅ 已导入（点保存生效）');
+            } catch (err) {
+                toast('JSON解析失败', 'er');
+            }
+            inputEl.value = '';
+        };
+        reader.readAsText(file, 'utf-8');
+    }
+
+    /* ========================================================== */
+    /* ======================= 监视 ============================= */
+    /* ========================================================== */
     async function renderMonitor(box) { box.innerHTML = '<div style="color:var(--text2);padding:20px;text-align:center">加载中...</div>'; try { const data = await apiCall('admin/monitor'); const logMap = {}; (data.logs || []).forEach(l => logMap[l.username] = l); const sessMap = {}; (data.sessions || []).forEach(s => sessMap[s.username] = s); const usernames = new Set([...Object.keys(logMap), ...Object.keys(sessMap)]); let html = `<div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap"><div style="padding:10px 16px;background:var(--pri-l);border-radius:8px"><div style="font-size:11px;color:var(--text2)">当前在线（5分钟内）</div><div style="font-size:22px;font-weight:600;color:#10b981">${data.onlineCount || 0} 人</div></div><button class="btn btn-s" onclick="Admin.switchTab('monitor')" style="align-self:center">🔄刷新</button></div><div style="overflow-x:auto"><table class="admin-table"><thead><tr><th>账号</th><th>对话次数</th><th>累计Token</th><th>不同IP</th><th>最后活跃</th></tr></thead><tbody>`; usernames.forEach(un => { const l = logMap[un] || {}; const s = sessMap[un] || {}; html += `<tr><td>${esc(un)}</td><td>${l.logCount || 0}</td><td>${(l.totalTokens || 0).toLocaleString()}</td><td>${(s.ipc || 0) >= 3 ? '<span style="color:#ef4444">🔴' + s.ipc + '</span>' : (s.ipc || 0)}</td><td style="font-size:11px">${fmtTime(s.last || 0)}</td></tr>`; }); html += '</tbody></table></div><h4 style="font-size:13px;margin:16px 0 8px">📋 最近100条</h4><div style="overflow-x:auto;max-height:280px;overflow-y:auto"><table class="admin-table"><thead><tr><th>时间</th><th>账号</th><th>对话</th><th>轮次</th><th>Token</th><th>模型</th></tr></thead><tbody>'; (data.recent || []).forEach(r => { html += `<tr><td style="font-size:11px">${new Date(r.created_at).toLocaleString()}</td><td>${esc(r.username)}</td><td style="max-width:150px;overflow:hidden;text-overflow:ellipsis">${esc(r.chat_name || '-')}</td><td>${r.rounds || 0}</td><td>${r.tokens || 0}</td><td>${esc(r.model || '-')}</td></tr>`; }); html += '</tbody></table></div>'; box.innerHTML = html; } catch (e) { box.innerHTML = '<div style="color:#ef4444;padding:20px">加载失败：' + e.message + '</div>'; } }
 
-    /* ========== 全局设置（批次3会大改，本批保持原样） ========== */
-    async function renderConfig(box) { box.innerHTML = '<div style="color:var(--text2);padding:20px;text-align:center">加载中...</div>'; try { const data = await apiCall('admin/config/get'); const cfg = data.config || {}; box.innerHTML = `<div style="max-width:400px"><h4 style="font-size:13px;margin-bottom:12px">⚙️ 全局参数（所有用户生效）</h4><div class="fg"><label>📐 物理打标：每块字数</label><input id="cfg_chunkSize" type="number" value="${esc(cfg.chunkSize || '300')}" min="50" max="5000"><div style="font-size:11px;color:var(--text2);margin-top:4px">默认300。</div></div><button class="btn btn-p" onclick="Admin.saveConfig()">💾 保存</button></div>`; } catch (e) { box.innerHTML = '<div style="color:#ef4444;padding:20px">加载失败：' + e.message + '</div>'; } }
-    function saveConfig() { const chunkSize = document.getElementById('cfg_chunkSize').value; apiCall('admin/config/save', 'POST', { config: { chunkSize } }).then(() => { toast('✅ 已保存'); if (typeof Chunker !== 'undefined') Chunker.setBlockSize(chunkSize); }).catch(e => toast('失败：' + e.message, 'er')); }
+    /* ========================================================== */
+    /* ==================== 全局设置（含快捷档） ================= */
+    /* ========================================================== */
+    async function renderConfig(box) {
+        box.innerHTML = '<div style="color:var(--text2);padding:20px;text-align:center">加载中...</div>';
+        try {
+            const data = await apiCall('admin/config/get');
+            const cfg = data.config || {};
+
+            let quick = [];
+            try { quick = JSON.parse(cfg.quickModels || '[]'); } catch (e) { quick = []; }
+            if (!Array.isArray(quick)) quick = [];
+            _quickModelDraft = quick;
+
+            box.innerHTML = `<div style="max-width:560px">
+                <h4 style="font-size:13px;margin-bottom:12px">⚙️ 全局参数（所有用户生效）</h4>
+
+                <div class="fg">
+                    <label>📐 物理打标：每块字数</label>
+                    <input id="cfg_chunkSize" type="number" value="${esc(cfg.chunkSize || '300')}" min="50" max="5000">
+                    <div style="font-size:11px;color:var(--text2);margin-top:4px">默认300。给AI定位长文用。</div>
+                </div>
+
+                <div style="margin:16px 0;padding:12px;background:var(--pri-l);border-radius:8px">
+                    <h4 style="font-size:13px;margin-bottom:6px">⚡ 快捷模型档</h4>
+                    <div style="font-size:11px;color:var(--text2);margin-bottom:10px;line-height:1.6">
+                        用户输入框上方会出现这些按钮，点一下即临时切换模型（<b>不改动引擎配置</b>，切引擎/换对话自动复位）。<br>
+                        · 标签：按钮上的字，越短越好（如"快""强""图"）<br>
+                        · 模型名：留空=用当前引擎的默认模型<br>
+                        · 生图：勾选后点该档即进入生图模式
+                    </div>
+                    <div id="quickModelList"></div>
+                    <button class="btn btn-s" onclick="Admin.addQuickModel()" style="margin-top:6px">➕ 添加一档</button>
+                </div>
+
+                <div class="fg">
+                    <label>⌨️ 快捷指令（用户在输入框打 "/" 唤起）</label>
+                    <textarea id="cfg_quickCmds" rows="6" placeholder="每行一条，格式：名称|内容模板&#10;翻译成英文|请把以下内容翻译成地道的英文：&#10;总结要点|请用要点列出以下内容的核心：">${esc(cfg.quickCmds || '')}</textarea>
+                    <div style="font-size:11px;color:var(--text2);margin-top:4px">格式：<code>名称|内容</code>，一行一条。内容里可含换行请用一行写完。</div>
+                </div>
+
+                <button class="btn btn-p" onclick="Admin.saveConfig()">💾 保存</button>
+            </div>`;
+
+            drawQuickModelList();
+        } catch (e) {
+            box.innerHTML = '<div style="color:#ef4444;padding:20px">加载失败：' + e.message + '</div>';
+        }
+    }
+
+    function drawQuickModelList() {
+        const box = document.getElementById('quickModelList');
+        if (!box) return;
+        let html = '';
+        _quickModelDraft.forEach((q, i) => {
+            html += `<div class="fr" style="margin-bottom:6px;align-items:flex-end">
+                <div class="fg" style="flex:0 0 90px;margin-bottom:0"><label>标签</label><input value="${esc(q.label || '')}" onchange="Admin.updQuickModel(${i},'label',this.value)" placeholder="如：快"></div>
+                <div class="fg" style="margin-bottom:0"><label>模型名（留空=引擎默认）</label><input value="${esc(q.model || '')}" onchange="Admin.updQuickModel(${i},'model',this.value)" placeholder="如 gpt-4o-mini"></div>
+                <div class="fg" style="flex:0 0 52px;margin-bottom:0;text-align:center"><label>生图</label><input type="checkbox" ${q.isImage ? 'checked' : ''} onchange="Admin.updQuickModel(${i},'isImage',this.checked)" style="width:18px;height:18px;accent-color:var(--pri)"></div>
+                <button class="btn btn-s btn-d" onclick="Admin.delQuickModel(${i})" style="margin-bottom:2px">🗑️</button>
+            </div>`;
+        });
+        if (!_quickModelDraft.length) html = '<div style="font-size:11px;color:var(--text2);padding:6px 0">（暂无档位，点下方添加）</div>';
+        box.innerHTML = html;
+    }
+
+    function addQuickModel() { _quickModelDraft.push({ label: '', model: '', isImage: false }); drawQuickModelList(); }
+    function delQuickModel(i) { _quickModelDraft.splice(i, 1); drawQuickModelList(); }
+    function updQuickModel(i, field, val) { if (_quickModelDraft[i]) _quickModelDraft[i][field] = val; }
+
+    function saveConfig() {
+        const chunkSize = document.getElementById('cfg_chunkSize').value;
+        const quickCmds = document.getElementById('cfg_quickCmds').value;
+
+        const quick = (_quickModelDraft || [])
+            .filter(q => (q.label || '').trim())
+            .map(q => ({
+                label: (q.label || '').trim(),
+                model: (q.model || '').trim(),
+                isImage: !!q.isImage
+            }));
+
+        apiCall('admin/config/save', 'POST', {
+            config: {
+                chunkSize: chunkSize,
+                quickModels: JSON.stringify(quick),
+                quickCmds: quickCmds
+            }
+        }).then(() => {
+            toast('✅ 已保存（用户刷新后生效）');
+            if (typeof Chunker !== 'undefined') Chunker.setBlockSize(chunkSize);
+            /* 当前管理员页面立即生效 */
+            if (typeof window.applyGlobalConfig === 'function') {
+                window.applyGlobalConfig({ quickModels: JSON.stringify(quick), quickCmds: quickCmds, chunkSize: chunkSize });
+            }
+        }).catch(e => toast('失败：' + e.message, 'er'));
+    }
 
     return {
         open, close, switchTab, apiCall,
+        /* 账号 */
         showCreateUser, showResetPwd, toggleStatus, delUser, showPerm, searchUsers,
         importXLSX, exportXLSX, downloadTemplate,
+        /* 引擎 */
         showEngEdit, saveEng, delEng, autoDetectEngType,
+        /* 模型库 */
         showModelEdit, saveModel, delModel,
-        addPreset, dupPreset, delPreset, selectPreset, filterPresetList, updP, updS, updSeg, updSegPrompt,
+        /* 预设 */
+        addPreset, dupPreset, delPreset, selectPreset, filterPresetList,
+        updP, updS, updSeg, updSegPrompt,
         toggleStep, toggleStepSel, stepsToNewPreset,
         addStep, dupStep, delStep, moveStep, addSeg, delSeg, backToEditor,
+        /* 分支 */
+        selVariant, addVariant, renameVariant, delVariant, renameDefaultVar,
+        /* 拖拽 */
+        stepDragStart, stepDragOver, stepDragLeave, stepDrop, stepDragEnd,
+        /* 分组 / 安全 / 保存 */
         manageGroups, addGroup, renameGroup, delGroup,
         showSecurity, applySecurity, savePresets, exportPresetsJSON, importPresetsJSON,
-        saveConfig,
+        /* 全局设置 */
+        saveConfig, addQuickModel, delQuickModel, updQuickModel,
     };
 })();
 
