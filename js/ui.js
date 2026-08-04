@@ -1,4 +1,5 @@
-/* ===== 飞凡AI - UI 渲染层 (v3.0.0 批次1) ===== */
+/* ===== 飞凡AI - UI 渲染层 (v3.2.0 批次2) ===== */
+/* 新增：思考过程折叠 / ▶继续 / ✏️编辑 / 表格导Excel / Mermaid下载PNG */
 
 const UI = (function () {
 
@@ -37,11 +38,8 @@ const UI = (function () {
     function renderMarkdown(text) {
         const md = getMD();
         let html;
-        if (md) {
-            html = md.render(text || '');
-        } else {
-            html = '<p>' + esc(text) + '</p>';
-        }
+        if (md) html = md.render(text || '');
+        else html = '<p>' + esc(text) + '</p>';
         if (window.DOMPurify) {
             html = window.DOMPurify.sanitize(html, {
                 ADD_TAGS: ['mark', 'sub', 'sup'],
@@ -78,14 +76,13 @@ const UI = (function () {
                 }
             } else if (node.nodeType === Node.ELEMENT_NODE) {
                 if (node.tagName === 'CODE' || node.tagName === 'PRE') return;
-                const children = Array.from(node.childNodes);
-                children.forEach(processNode);
+                Array.from(node.childNodes).forEach(processNode);
             }
         }
         processNode(container);
     }
 
-    /* ---------- 渲染 Mermaid 图表 ---------- */
+    /* ---------- 渲染 Mermaid 图表（★带下载按钮） ---------- */
     function renderMermaid(container) {
         if (!window.mermaid) return;
         const blocks = container.querySelectorAll('pre code.language-mermaid, pre code.language-mmd');
@@ -97,9 +94,85 @@ const UI = (function () {
             wrap.textContent = code;
             const pre = codeEl.closest('pre');
             if (pre && pre.parentNode) pre.parentNode.replaceChild(wrap, pre);
-            try { mermaid.run({ nodes: [wrap] }); }
-            catch (e) { console.warn('[Mermaid]', e); }
+            try {
+                const r = mermaid.run({ nodes: [wrap] });
+                if (r && typeof r.then === 'function') {
+                    r.then(() => attachMermaidDownload(wrap)).catch(e => console.warn('[Mermaid]', e));
+                } else {
+                    setTimeout(() => attachMermaidDownload(wrap), 300);
+                }
+            } catch (e) {
+                console.warn('[Mermaid]', e);
+            }
         });
+    }
+
+    /* 给 mermaid 图挂"下载图片"按钮 */
+    function attachMermaidDownload(wrap) {
+        if (!wrap || wrap.querySelector('.mermaid-dl-btn')) return;
+        const svg = wrap.querySelector('svg');
+        if (!svg) return;
+        wrap.style.position = 'relative';
+        const btn = document.createElement('button');
+        btn.className = 'mermaid-dl-btn';
+        btn.textContent = '🖼️ 下载图片';
+        btn.onclick = (e) => { e.stopPropagation(); downloadSvgAsPng(svg, btn); };
+        wrap.appendChild(btn);
+    }
+
+    /* SVG → PNG 下载 */
+    function downloadSvgAsPng(svgEl, btnEl) {
+        try {
+            const clone = svgEl.cloneNode(true);
+            clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+
+            let w = (svgEl.viewBox && svgEl.viewBox.baseVal && svgEl.viewBox.baseVal.width)
+                ? svgEl.viewBox.baseVal.width : svgEl.getBoundingClientRect().width;
+            let h = (svgEl.viewBox && svgEl.viewBox.baseVal && svgEl.viewBox.baseVal.height)
+                ? svgEl.viewBox.baseVal.height : svgEl.getBoundingClientRect().height;
+            w = Math.max(w, 100);
+            h = Math.max(h, 100);
+
+            const svgStr = new XMLSerializer().serializeToString(clone);
+            const svgBlob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(svgBlob);
+
+            const img = new Image();
+            img.onload = () => {
+                const scale = 2;
+                const canvas = document.createElement('canvas');
+                canvas.width = w * scale;
+                canvas.height = h * scale;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.scale(scale, scale);
+                ctx.drawImage(img, 0, 0, w, h);
+                URL.revokeObjectURL(url);
+
+                canvas.toBlob((blob) => {
+                    if (!blob) { if (typeof toast === 'function') toast('导出失败', 'er'); return; }
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = '图表-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.png';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(a.href);
+                    if (btnEl) {
+                        btnEl.textContent = '✓ 已下载';
+                        setTimeout(() => { btnEl.textContent = '🖼️ 下载图片'; }, 1500);
+                    }
+                }, 'image/png');
+            };
+            img.onerror = () => {
+                URL.revokeObjectURL(url);
+                if (typeof toast === 'function') toast('图表转换失败', 'er');
+            };
+            img.src = url;
+        } catch (e) {
+            if (typeof toast === 'function') toast('下载失败：' + e.message, 'er');
+        }
     }
 
     /* ---------- 包装代码块 ---------- */
@@ -161,6 +234,60 @@ const UI = (function () {
         });
     }
 
+    /* ---------- 包装表格：加"导出Excel"按钮 ---------- */
+    function wrapTables(container) {
+        const tables = container.querySelectorAll('table');
+        tables.forEach((table) => {
+            if (table.parentNode.classList.contains('table-wrap')) return;
+            const wrap = document.createElement('div');
+            wrap.className = 'table-wrap';
+            const btn = document.createElement('button');
+            btn.className = 'table-export-btn';
+            btn.textContent = '📊 导出Excel';
+            btn.onclick = (e) => { e.stopPropagation(); exportTableToXlsx(table, btn); };
+            table.parentNode.replaceChild(wrap, table);
+            wrap.appendChild(btn);
+            wrap.appendChild(table);
+        });
+    }
+
+    /* 把单个 <table> 导出为 xlsx */
+    function exportTableToXlsx(tableEl, btnEl) {
+        const doExport = () => {
+            try {
+                const rows = [];
+                tableEl.querySelectorAll('tr').forEach(tr => {
+                    const cells = [];
+                    tr.querySelectorAll('th,td').forEach(td => cells.push((td.textContent || '').trim()));
+                    if (cells.length) rows.push(cells);
+                });
+                if (!rows.length) { if (typeof toast === 'function') toast('表格为空', 'er'); return; }
+                const ws = XLSX.utils.aoa_to_sheet(rows);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+                XLSX.writeFile(wb, '表格-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.xlsx');
+                if (btnEl) {
+                    btnEl.textContent = '✓ 已导出';
+                    setTimeout(() => { btnEl.textContent = '📊 导出Excel'; }, 1500);
+                }
+            } catch (e) {
+                if (typeof toast === 'function') toast('导出失败：' + e.message, 'er');
+            }
+        };
+
+        if (window.XLSX) {
+            doExport();
+        } else if (typeof OfficeParser !== 'undefined' && OfficeParser.loadXLSX) {
+            if (btnEl) btnEl.textContent = '⏳ 加载中...';
+            OfficeParser.loadXLSX().then(doExport).catch(e => {
+                if (typeof toast === 'function') toast('加载Excel库失败：' + e.message, 'er');
+                if (btnEl) btnEl.textContent = '📊 导出Excel';
+            });
+        } else {
+            if (typeof toast === 'function') toast('Excel库不可用', 'er');
+        }
+    }
+
     /* ---------- 完整渲染流程 ---------- */
     function fullRender(bubElement, text) {
         bubElement.classList.remove('streaming');
@@ -168,6 +295,7 @@ const UI = (function () {
         try {
             renderMath(bubElement);
             wrapCodeBlocks(bubElement);
+            wrapTables(bubElement);
             renderMermaid(bubElement);
             bubElement.querySelectorAll('img').forEach(img => {
                 img.onclick = () => {
@@ -181,9 +309,7 @@ const UI = (function () {
 
     /* ---------- 流式渲染（仅文本） ---------- */
     function streamRender(bubElement, text) {
-        if (!bubElement.classList.contains('streaming')) {
-            bubElement.classList.add('streaming');
-        }
+        if (!bubElement.classList.contains('streaming')) bubElement.classList.add('streaming');
         bubElement.textContent = text;
     }
 
@@ -194,7 +320,7 @@ const UI = (function () {
         wrap.className = 'msg ' + msg.role;
         wrap.dataset.msgId = msg.id || '';
 
-        // ★ 勾选模式：头像旁加勾选框
+        /* 勾选模式 */
         if (opts.selectMode) {
             const selBox = document.createElement('div');
             selBox.className = 'msg-sel';
@@ -214,6 +340,7 @@ const UI = (function () {
         const m = document.createElement('div');
         m.className = 'm';
 
+        /* 附件徽章 */
         if (msg.attachments && msg.attachments.length) {
             const mf = document.createElement('div');
             mf.className = 'mf';
@@ -226,24 +353,42 @@ const UI = (function () {
             m.appendChild(mf);
         }
 
+        /* ★ 思考过程折叠区 */
+        if (msg.role === 'assistant' && msg._reasoning) {
+            const think = document.createElement('details');
+            think.className = 'think-box';
+            const summary = document.createElement('summary');
+            const wc = (typeof cntW === 'function') ? cntW(msg._reasoning) : msg._reasoning.length;
+            summary.textContent = '💭 思考过程（' + wc + ' 字）';
+            think.appendChild(summary);
+            const tc = document.createElement('div');
+            tc.className = 'think-content';
+            tc.textContent = msg._reasoning;
+            think.appendChild(tc);
+            m.appendChild(think);
+        }
+
         const bub = document.createElement('div');
         bub.className = 'bub';
         if (msg.role === 'assistant') {
-            if (msg._streaming) { streamRender(bub, msg.content || ''); }
-            else { fullRender(bub, msg.content || ''); }
+            if (msg._streaming) streamRender(bub, msg.content || '');
+            else fullRender(bub, msg.content || '');
         } else {
             bub.textContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
         }
         m.appendChild(bub);
 
+        /* 底部操作栏 */
         const mm = document.createElement('div');
         mm.className = 'mm';
+
         if (msg._time) {
             const t = document.createElement('span');
             t.className = 'msg-time';
             t.textContent = msg._time;
             mm.appendChild(t);
         }
+
         if (msg.role === 'assistant' && msg.content) {
             const wc = cntW(msg.content);
             if (wc > 0) {
@@ -252,6 +397,7 @@ const UI = (function () {
                 mm.appendChild(w);
             }
         }
+
         const cpBtn = document.createElement('button');
         cpBtn.textContent = '📋 复制';
         cpBtn.onclick = () => {
@@ -259,18 +405,40 @@ const UI = (function () {
                 .then(() => toast('已复制')).catch(() => toast('复制失败', 'er'));
         };
         mm.appendChild(cpBtn);
+
         if (opts.onDelete) {
             const dBtn = document.createElement('button');
             dBtn.textContent = '🗑️ 删除';
             dBtn.onclick = () => { if (confirm('删除这条消息？')) opts.onDelete(msg); };
             mm.appendChild(dBtn);
         }
+
+        /* ★ 用户消息：编辑后重发 */
+        if (msg.role === 'user' && opts.onEdit) {
+            const eBtn = document.createElement('button');
+            eBtn.textContent = '✏️ 编辑';
+            eBtn.title = '改完后会删除这条及之后所有消息并重新生成';
+            eBtn.onclick = () => opts.onEdit(msg);
+            mm.appendChild(eBtn);
+        }
+
         if (msg.role === 'assistant' && opts.onRegen) {
             const rBtn = document.createElement('button');
             rBtn.textContent = '🔄 重答';
             rBtn.onclick = () => opts.onRegen(msg);
             mm.appendChild(rBtn);
         }
+
+        /* ★ 被中断的AI消息：继续续写 */
+        if (msg.role === 'assistant' && msg._interrupted && msg.content && opts.onContinue) {
+            const cBtn = document.createElement('button');
+            cBtn.textContent = '▶ 继续';
+            cBtn.title = '接着未写完的内容继续写';
+            cBtn.style.color = 'var(--pri)';
+            cBtn.onclick = () => opts.onContinue(msg);
+            mm.appendChild(cBtn);
+        }
+
         m.appendChild(mm);
         wrap.appendChild(m);
         return { wrap: wrap, bub: bub };
@@ -305,16 +473,16 @@ const UI = (function () {
         let pending = '';
         let timer = null;
         const INTERVAL = 50;
-        const NEAR_BOTTOM = 80;   // ★ 距底部80px内算"贴近底部"
+        const NEAR_BOTTOM = 80;
         function isNearBottom() {
             if (!container) return true;
             return (container.scrollHeight - container.scrollTop - container.clientHeight) < NEAR_BOTTOM;
         }
         function flush() {
             if (!pending) return;
-            const stick = isNearBottom();          // ★ 渲染前先看用户在不在底部
+            const stick = isNearBottom();
             streamRender(bub, pending);
-            if (stick) scrollToBottom(container);  // ★ 只有原本贴底才跟随
+            if (stick) scrollToBottom(container);
             lastUpdate = Date.now();
             timer = null;
         }
@@ -322,17 +490,17 @@ const UI = (function () {
             pending = fullText;
             const now = Date.now();
             const elapsed = now - lastUpdate;
-            if (elapsed >= INTERVAL) { flush(); }
-            else if (!timer) { timer = setTimeout(flush, INTERVAL - elapsed); }
+            if (elapsed >= INTERVAL) flush();
+            else if (!timer) timer = setTimeout(flush, INTERVAL - elapsed);
         };
     }
 
-    /* ---------- 暴露 ---------- */
     return {
         renderMarkdown: renderMarkdown,
         renderMath: renderMath,
         renderMermaid: renderMermaid,
         wrapCodeBlocks: wrapCodeBlocks,
+        wrapTables: wrapTables,
         fullRender: fullRender,
         streamRender: streamRender,
         createMessageNode: createMessageNode,
