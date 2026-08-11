@@ -110,21 +110,50 @@ const API = (function () {
         }
     }
 
+    function _textOf(content) {
+        if (typeof content === 'string') return content;
+        if (Array.isArray(content)) return content.map(p => {
+            if (typeof p === 'string') return p;
+            return p && (p.text || p.content) ? String(p.text || p.content) : '';
+        }).join('');
+        return '';
+    }
+
+    function _errorOf(obj) {
+        if (!obj || typeof obj !== 'object') return '';
+        const e = obj.error || (obj.type === 'error' ? obj : null);
+        if (!e) return '';
+        if (typeof e === 'string') return e;
+        return e.message || (e.error && e.error.message) || e.type || '上游返回错误';
+    }
+
+    function _markParseError(usageBox, err) {
+        usageBox.parseErrors = (usageBox.parseErrors || 0) + 1;
+        usageBox.lastParseError = err && err.message ? err.message : String(err || '未知格式错误');
+    }
+
     function parseChunkOpenAI(jsonStr, usageBox) {
-        try {
-            const obj = JSON.parse(jsonStr);
-            if (obj.usage) usageBox.usage = obj.usage;
-            if (obj.choices && obj.choices[0]) {
-                const c = obj.choices[0];
-                const delta = c.delta || {};
-                /* 思考过程（DeepSeek / 部分中转站的 reasoning_content） */
-                if (delta.reasoning_content) {
-                    usageBox.reasoning = (usageBox.reasoning || '') + delta.reasoning_content;
-                }
-                if (delta.content) return delta.content;
-                if (c.message && c.message.content) return c.message.content;
+        let obj;
+        try { obj = JSON.parse(jsonStr); }
+        catch (e) { _markParseError(usageBox, e); return ''; }
+        const apiErr = _errorOf(obj);
+        if (apiErr) { usageBox.protocolError = apiErr; return ''; }
+        if (obj.usage) usageBox.usage = obj.usage;
+        if (obj.choices && obj.choices[0]) {
+            const c = obj.choices[0];
+            if (c.finish_reason !== undefined && c.finish_reason !== null) {
+                usageBox.sawFinish = true;
+                usageBox.finishReason = c.finish_reason;
             }
-        } catch (e) {}
+            const delta = c.delta || {};
+            /* 思考过程（DeepSeek / 部分中转站的 reasoning_content） */
+            if (delta.reasoning_content) {
+                usageBox.reasoning = (usageBox.reasoning || '') + delta.reasoning_content;
+            }
+            const deltaText = _textOf(delta.content);
+            if (deltaText) return deltaText;
+            if (c.message) return _textOf(c.message.content);
+        }
         return '';
     }
 
@@ -236,22 +265,33 @@ const API = (function () {
     }
 
     function parseAnthropicEvent(eventName, dataStr, usageBox) {
-        try {
-            const obj = JSON.parse(dataStr);
-            if (eventName === 'message_start' && obj.message && obj.message.usage)
-                usageBox.usage = mergeAnthropicUsage(usageBox.usage, obj.message.usage);
-            if (eventName === 'message_delta' && obj.usage)
-                usageBox.usage = mergeAnthropicUsage(usageBox.usage, obj.usage);
-            if (eventName === 'content_block_delta' && obj.delta) {
-                /* Claude 扩展思考 */
-                if (obj.delta.type === 'thinking_delta') {
-                    usageBox.reasoning = (usageBox.reasoning || '') + (obj.delta.thinking || '');
-                    return '';
-                }
-                if (obj.delta.type === 'text_delta') return obj.delta.text || '';
-                if (typeof obj.delta.text === 'string') return obj.delta.text;
+        let obj;
+        try { obj = JSON.parse(dataStr); }
+        catch (e) { _markParseError(usageBox, e); return ''; }
+        const apiErr = _errorOf(obj);
+        if (eventName === 'error' || apiErr) {
+            usageBox.protocolError = apiErr || 'Anthropic 上游返回错误';
+            return '';
+        }
+        if (eventName === 'message_start' && obj.message && obj.message.usage)
+            usageBox.usage = mergeAnthropicUsage(usageBox.usage, obj.message.usage);
+        if (eventName === 'message_delta') {
+            if (obj.usage) usageBox.usage = mergeAnthropicUsage(usageBox.usage, obj.usage);
+            if (obj.delta && obj.delta.stop_reason) {
+                usageBox.sawFinish = true;
+                usageBox.finishReason = obj.delta.stop_reason;
             }
-        } catch (e) {}
+        }
+        if (eventName === 'message_stop') usageBox.sawFinish = true;
+        if (eventName === 'content_block_delta' && obj.delta) {
+            /* Claude 扩展思考 */
+            if (obj.delta.type === 'thinking_delta') {
+                usageBox.reasoning = (usageBox.reasoning || '') + (obj.delta.thinking || '');
+                return '';
+            }
+            if (obj.delta.type === 'text_delta') return obj.delta.text || '';
+            if (typeof obj.delta.text === 'string') return obj.delta.text;
+        }
         return '';
     }
 
@@ -305,19 +345,46 @@ const API = (function () {
     }
 
     function parseChunkGemini(jsonStr, usageBox) {
-        try {
-            const obj = JSON.parse(jsonStr);
-            if (obj.usageMetadata) {
-                usageBox.usage = {
-                    prompt_tokens: obj.usageMetadata.promptTokenCount,
-                    completion_tokens: obj.usageMetadata.candidatesTokenCount,
-                    cached_tokens: obj.usageMetadata.cachedContentTokenCount || 0,
-                };
-            }
-            const cand = obj.candidates && obj.candidates[0];
-            if (cand && cand.content && cand.content.parts) return cand.content.parts.map(p => p.text || '').join('');
-        } catch (e) {}
+        let obj;
+        try { obj = JSON.parse(jsonStr); }
+        catch (e) { _markParseError(usageBox, e); return ''; }
+        const apiErr = _errorOf(obj);
+        if (apiErr) { usageBox.protocolError = apiErr; return ''; }
+        if (obj.promptFeedback && obj.promptFeedback.blockReason) {
+            usageBox.protocolError = '内容被上游拦截：' + obj.promptFeedback.blockReason;
+            return '';
+        }
+        if (obj.usageMetadata) {
+            usageBox.usage = {
+                prompt_tokens: obj.usageMetadata.promptTokenCount,
+                completion_tokens: obj.usageMetadata.candidatesTokenCount,
+                cached_tokens: obj.usageMetadata.cachedContentTokenCount || 0,
+            };
+        }
+        const cand = obj.candidates && obj.candidates[0];
+        if (cand && cand.finishReason) {
+            usageBox.sawFinish = true;
+            usageBox.finishReason = cand.finishReason;
+        }
+        if (cand && cand.content && cand.content.parts) return cand.content.parts.map(p => p.text || '').join('');
         return '';
+    }
+
+    function parseNonStreamResponse(mode, text, usageBox) {
+        let obj;
+        try { obj = JSON.parse(text); }
+        catch (e) { throw new Error('上游返回的不是有效流或 JSON：' + e.message); }
+        const apiErr = _errorOf(obj);
+        if (apiErr) throw new Error(apiErr);
+        usageBox.nonStreamComplete = true;
+        usageBox.sawFinish = true;
+        if (mode === 'anthropic') {
+            if (obj.usage) usageBox.usage = mergeAnthropicUsage(usageBox.usage, obj.usage);
+            if (obj.stop_reason) usageBox.finishReason = obj.stop_reason;
+            return Array.isArray(obj.content) ? obj.content.map(p => p && p.text ? p.text : '').join('') : _textOf(obj.content);
+        }
+        if (mode === 'gemini') return parseChunkGemini(JSON.stringify(obj), usageBox);
+        return parseChunkOpenAI(JSON.stringify(obj), usageBox);
     }
 
     /* ============ 协议分发 ============ */
@@ -560,26 +627,56 @@ const API = (function () {
     /* ============ 核心：流式对话 ============ */
     function streamChat(profile, messages, handlers) {
         const h = handlers || {};
-        const ctrl = new AbortController();
+        let activeCtrl = null;
         let lastChunkTime = Date.now();
-        let aborted = false;
+        let userAborted = false;
+        let stallError = null;
+        let settled = false;
         let full = '';
-        const usageBox = { usage: null, reasoning: '' };
+        let requestId = '';
+        const usageBox = {};
+
+        function resetAttemptState() {
+            usageBox.usage = null;
+            usageBox.reasoning = '';
+            usageBox.sawDone = false;
+            usageBox.sawFinish = false;
+            usageBox.finishReason = null;
+            usageBox.nonStreamComplete = false;
+            usageBox.protocolError = '';
+            usageBox.parseErrors = 0;
+            usageBox.lastParseError = '';
+        }
+        resetAttemptState();
 
         const HEARTBEAT_INTERVAL = 5000;
         const STALL_TIMEOUT = 300000;
         const heartbeat = setInterval(() => {
-            if (aborted) return;
+            if (settled || userAborted) return;
             if (Date.now() - lastChunkTime > STALL_TIMEOUT) {
-                aborted = true; clearInterval(heartbeat);
-                try { ctrl.abort(); } catch (e) {}
-                if (h.onError) h.onError(new Error('网络无响应超过 300 秒，已自动中断'));
+                stallError = new Error('网络无响应超过 300 秒，连接已中断');
+                try { if (activeCtrl) activeCtrl.abort(); } catch (e) {}
             }
         }, HEARTBEAT_INTERVAL);
 
         const onVisible = () => { if (!document.hidden && full && h.onDelta) h.onDelta('', full); };
         document.addEventListener('visibilitychange', onVisible);
-        function cleanup() { clearInterval(heartbeat); document.removeEventListener('visibilitychange', onVisible); }
+        function cleanup() {
+            clearInterval(heartbeat);
+            document.removeEventListener('visibilitychange', onVisible);
+        }
+        function finish(kind, req, err) {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            const usage = normalizeUsage(req.mode, usageBox.usage);
+            if (kind === 'done' && h.onDone) h.onDone(full, usage, usageBox.reasoning);
+            else if (kind === 'abort' && h.onAbort) h.onAbort(full, usage, usageBox.reasoning);
+            else if (kind === 'interrupted') {
+                if (h.onInterrupted) h.onInterrupted(full, err, usage, usageBox.reasoning);
+                else if (h.onError) h.onError(err);
+            } else if (h.onError) h.onError(err || new Error('未知错误'));
+        }
 
         (async () => {
             const req = buildRequest(profile, messages);
@@ -589,87 +686,143 @@ const API = (function () {
 
             for (let ki = 0; ki < keys.length; ki++) {
                 const key = keys[ki];
-                if (aborted) break;
+                if (userAborted) break;
                 for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
-                    if (aborted) break;
+                    if (userAborted) break;
+                    if (attempt > 0) {
+                        await sleep(1000 * Math.pow(2, attempt - 1));
+                        if (userAborted) break;
+                    }
+                    resetAttemptState();
+                    activeCtrl = new AbortController();
+                    lastChunkTime = Date.now();
+                    stallError = null;
                     try {
-                        if (attempt > 0) { await sleep(1000 * Math.pow(2, attempt - 1)); if (aborted) break; }
                         if (h.onStart && ki === 0 && attempt === 0) h.onStart();
-
                         const resp = await apiF(profile, req.path, {
-                            method: 'POST', body: JSON.stringify(req.payload), signal: ctrl.signal,
+                            method: 'POST', body: JSON.stringify(req.payload), signal: activeCtrl.signal,
                         }, key);
+                        requestId = resp.headers.get('X-Feifan-Request-Id') || requestId;
 
                         if (!resp.ok) {
                             const errText = await resp.text();
                             let msg = 'HTTP ' + resp.status + ': ' + errText.slice(0, 300);
                             const human = humanizeApiError(errText);
                             if (human !== errText) msg = human;
-                            if (resp.status >= 500 && attempt < MAX_RETRY) { lastErr = new Error(msg); continue; }
-                            throw new Error(msg);
+                            const httpErr = new Error(msg);
+                            httpErr.status = resp.status;
+                            httpErr.retryable = resp.status === 408 || resp.status === 429 || resp.status >= 500;
+                            throw httpErr;
                         }
+                        if (!resp.body) throw new Error('响应没有可读取的内容');
 
-                        if (!resp.body) throw new Error('响应无 body 流');
-                        const reader = resp.body.getReader();
-                        const dec = new TextDecoder('utf-8');
-                        let buffer = '';
-                        let curEvent = '';
-                        lastChunkTime = Date.now();
-
-                        while (true) {
-                            if (aborted) { try { reader.cancel(); } catch (e) {} break; }
-                            const { done, value } = await reader.read();
-                            if (done) { buffer += dec.decode(); break; }
+                        const contentType = (resp.headers.get('Content-Type') || '').toLowerCase();
+                        if (!contentType.includes('text/event-stream')) {
+                            const bodyText = await resp.text();
                             lastChunkTime = Date.now();
-                            buffer += dec.decode(value, { stream: true });
-                            const lines = buffer.split('\n');
-                            buffer = lines.pop();
-                            for (const line of lines) {
+                            if (/^\s*(?:event:|data:)/m.test(bodyText)) {
+                                let curEvent = '';
+                                const lines = bodyText.split(/\r?\n/);
+                                for (const line of lines) {
+                                    const trimmed = line.trim();
+                                    if (!trimmed) { curEvent = ''; continue; }
+                                    if (trimmed.startsWith('event:')) { curEvent = trimmed.slice(6).trim(); continue; }
+                                    if (!trimmed.startsWith('data:')) continue;
+                                    const dataStr = trimmed.slice(5).trim();
+                                    if (dataStr === '[DONE]') { usageBox.sawDone = true; continue; }
+                                    let delta = '';
+                                    if (req.mode === 'anthropic') delta = parseAnthropicEvent(curEvent, dataStr, usageBox);
+                                    else if (req.mode === 'gemini') delta = parseChunkGemini(dataStr, usageBox);
+                                    else delta = parseChunkOpenAI(dataStr, usageBox);
+                                    if (usageBox.protocolError) throw new Error(usageBox.protocolError);
+                                    if (delta) { full += delta; if (h.onDelta) h.onDelta(delta, full); }
+                                }
+                            } else {
+                                const delta = parseNonStreamResponse(req.mode, bodyText, usageBox);
+                                if (delta) { full += delta; if (h.onDelta) h.onDelta(delta, full); }
+                            }
+                        } else {
+                            const reader = resp.body.getReader();
+                            const dec = new TextDecoder('utf-8');
+                            let buffer = '';
+                            let curEvent = '';
+
+                            const processLine = (line) => {
                                 const trimmed = line.trim();
-                                if (!trimmed) { curEvent = ''; continue; }
-                                if (trimmed.startsWith('event:')) { curEvent = trimmed.slice(6).trim(); continue; }
-                                if (!trimmed.startsWith('data:')) continue;
+                                if (!trimmed) { curEvent = ''; return; }
+                                if (trimmed.startsWith('event:')) { curEvent = trimmed.slice(6).trim(); return; }
+                                if (!trimmed.startsWith('data:')) return;
                                 const dataStr = trimmed.slice(5).trim();
-                                if (dataStr === '[DONE]') continue;
+                                if (dataStr === '[DONE]') { usageBox.sawDone = true; return; }
                                 let delta = '';
                                 if (req.mode === 'anthropic') delta = parseAnthropicEvent(curEvent, dataStr, usageBox);
                                 else if (req.mode === 'gemini') delta = parseChunkGemini(dataStr, usageBox);
                                 else delta = parseChunkOpenAI(dataStr, usageBox);
+                                if (usageBox.protocolError) throw new Error(usageBox.protocolError);
                                 if (delta) { full += delta; if (h.onDelta) h.onDelta(delta, full); }
+                            };
+
+                            while (true) {
+                                if (userAborted) { try { await reader.cancel(); } catch (e) {} break; }
+                                const { done, value } = await reader.read();
+                                if (done) { buffer += dec.decode(); break; }
+                                lastChunkTime = Date.now();
+                                buffer += dec.decode(value, { stream: true });
+                                const lines = buffer.split('\n');
+                                buffer = lines.pop();
+                                for (const line of lines) processLine(line);
                             }
-                        }
-                        if (buffer.trim() && buffer.trim().startsWith('data:')) {
-                            const dataStr = buffer.trim().slice(5).trim();
-                            if (dataStr && dataStr !== '[DONE]') {
-                                let delta = '';
-                                if (req.mode === 'anthropic') delta = parseAnthropicEvent(curEvent, dataStr, usageBox);
-                                else if (req.mode === 'gemini') delta = parseChunkGemini(dataStr, usageBox);
-                                else delta = parseChunkOpenAI(dataStr, usageBox);
-                                if (delta) { full += delta; if (h.onDelta) h.onDelta(delta, full); }
-                            }
+                            if (buffer.trim()) processLine(buffer);
                         }
 
-                        cleanup();
-                        if (aborted) { if (h.onAbort) h.onAbort(full, normalizeUsage(req.mode, usageBox.usage), usageBox.reasoning); }
-                        else { if (h.onDone) h.onDone(full, normalizeUsage(req.mode, usageBox.usage), usageBox.reasoning); }
-                        return;
-                    } catch (err) {
-                        lastErr = err;
-                        if (err.name === 'AbortError' || aborted) {
-                            cleanup();
-                            if (h.onAbort) h.onAbort(full, normalizeUsage(req.mode, usageBox.usage), usageBox.reasoning);
-                            return;
+                        if (userAborted) { finish('abort', req); return; }
+                        if (usageBox.protocolError) throw new Error(usageBox.protocolError);
+                        if (!usageBox.sawDone && !usageBox.sawFinish && !usageBox.nonStreamComplete) {
+                            const incomplete = new Error(full
+                                ? '连接在回答完成前中断，已保留收到的内容'
+                                : '连接已结束，但没有收到完整回答');
+                            incomplete.code = full ? 'STREAM_INCOMPLETE' : 'EMPTY_RESPONSE';
+                            incomplete.retryable = !full;
+                            throw incomplete;
                         }
-                        if (attempt >= MAX_RETRY) break;
+                        if (!full) {
+                            const empty = new Error(usageBox.parseErrors
+                                ? '收到的数据无法解析：' + usageBox.lastParseError
+                                : '上游已结束，但没有返回可显示的回答');
+                            empty.code = 'EMPTY_RESPONSE';
+                            empty.retryable = true;
+                            throw empty;
+                        }
+                        finish('done', req);
+                        return;
+                    } catch (rawErr) {
+                        const err = stallError || rawErr;
+                        if (requestId && err && !err.requestId) {
+                            err.requestId = requestId;
+                            err.message += '（请求编号：' + requestId + '）';
+                        }
+                        stallError = null;
+                        lastErr = err;
+                        if (userAborted) { finish('abort', req); return; }
+                        if (full) { finish('interrupted', req, err); return; }
+                        const retryable = err.retryable !== false && (!err.status || err.status === 408 || err.status === 429 || err.status >= 500);
+                        if (!retryable || attempt >= MAX_RETRY) break;
                         console.warn('[API] 重试', err.message);
                     }
                 }
             }
-            cleanup();
-            if (h.onError) h.onError(lastErr || new Error('未知错误'));
+            if (userAborted) finish('abort', req);
+            else finish('error', req, lastErr || new Error('未知错误'));
         })();
 
-        return { abort: function () { aborted = true; cleanup(); try { ctrl.abort(); } catch (e) {} }, get full() { return full; } };
+        return {
+            abort: function () {
+                if (settled) return;
+                userAborted = true;
+                try { if (activeCtrl) activeCtrl.abort(); } catch (e) {}
+            },
+            get full() { return full; }
+        };
     }
 
     /* ---------- 统一 usage 结构（供 UI 显示），优先读平台返回的费用 ---------- */
