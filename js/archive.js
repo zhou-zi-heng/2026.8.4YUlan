@@ -43,27 +43,22 @@ const Archive = (function () {
         return title + '__' + user + '__' + idShort;
     }
 
-    function _fingerprint(chat) {
-        const msgs = chat.messages || [];
-        let lastContent = '';
-        if (msgs.length) {
-            const last = msgs[msgs.length - 1];
-            lastContent = typeof last.content === 'string' ? last.content : JSON.stringify(last.content || '');
+    function _fallbackHash(str) {
+        let h = 2166136261;
+        for (let i = 0; i < str.length; i++) {
+            h ^= str.charCodeAt(i);
+            h = Math.imul(h, 16777619);
         }
-        let totalLen = 0;
-        for (let i = 0; i < msgs.length; i++) {
-            const ct = typeof msgs[i].content === 'string' ? msgs[i].content : '';
-            totalLen += ct.length;
+        return 'f:' + (h >>> 0).toString(16) + ':' + str.length;
+    }
+
+    async function _fingerprint(chat) {
+        const str = JSON.stringify(chat || {});
+        if (window.crypto && window.crypto.subtle) {
+            const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+            return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
         }
-        return [
-            msgs.length,
-            (chat.title || ''),
-            totalLen,
-            lastContent.length,
-            lastContent.slice(-60),
-            (chat.systemPrompt || '').length,
-            (chat.knowledgeBase || []).length,
-        ].join('|');
+        return _fallbackHash(str);
     }
 
     /* ==========================================================
@@ -176,16 +171,12 @@ const Archive = (function () {
 
     async function _archiveOne(chat, userName) {
         const base = _baseName(chat, userName);
-        let html = '';
-        try { html = _buildHtmlFn ? _buildHtmlFn(chat) : ''; }
-        catch (e) { console.warn('[Archive] 生成 HTML 失败', e); }
-        if (html) await _writeFile(base + '.html', html);
-        try {
-            const payload = Snapshot._buildSharePayload(chat, { includeKB: true, sharedBy: userName || '' });
-            await _writeFile(base + '.feifan-share.json', JSON.stringify(payload, null, 2));
-        } catch (e) {
-            console.warn('[Archive] 生成 JSON 失败', e);
-        }
+        const html = _buildHtmlFn ? _buildHtmlFn(chat) : '';
+        if (!html) throw new Error('无法生成存档 HTML');
+        const payload = Snapshot._buildSharePayload(chat, { includeKB: true, sharedBy: userName || '' });
+        const json = JSON.stringify(payload, null, 2);
+        await _writeFile(base + '.html', html);
+        await _writeFile(base + '.feifan-share.json', json);
     }
 
     /* ==========================================================
@@ -214,7 +205,7 @@ const Archive = (function () {
             const chat = S.chats[cid];
             if (!chat || !chat.messages || !chat.messages.length) { skipped++; continue; }
 
-            const sig = _fingerprint(chat);
+            const sig = await _fingerprint(chat);
             if (_archiveSigs[cid] === sig) { skipped++; continue; }
 
             try {
@@ -293,7 +284,10 @@ const Archive = (function () {
         config = config || {};
         _getStateFn = config.getState;
         _buildHtmlFn = config.buildHtml;
-        if (config.intervalMin !== undefined) _intervalMin = parseInt(config.intervalMin, 10) || 10;
+        if (config.intervalMin !== undefined) {
+            const parsedInterval = parseInt(config.intervalMin, 10);
+            _intervalMin = Number.isFinite(parsedInterval) ? parsedInterval : 10;
+        }
         if (config.debounceMin !== undefined) _debounceMin = parseFloat(config.debounceMin) || 1;
 
         if (!SUPPORTS_FSA) {
