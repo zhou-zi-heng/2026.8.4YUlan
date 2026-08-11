@@ -1,29 +1,30 @@
-/* ===== 飞凡AI - Service Worker (v3.1.0) ===== */
+/* ===== 飞凡AI - Service Worker (v3.6.0) ===== */
 /* 离线打开 + 静态资源缓存 */
 
-const CACHE_NAME = 'feifan-ai-v3.4.0';
+const CACHE_NAME = 'feifan-ai-v3.6.0';
 const PRECACHE = [
     './',
     './index.html',
-    './css/main.css?v=3.3.0',
-    './css/theme.css?v=3.3.0',
-    './js/utils.js?v=3.3.0',
-    './js/storage.js?v=3.3.0',
-    './js/api.js?v=3.3.0',
-    './js/auth.js?v=3.3.0',
-    './js/admin.js?v=3.3.0',
-    './js/ui.js?v=3.3.0',
-    './js/parser.js?v=3.3.0',
-    './js/chunker.js?v=3.3.0',
-    './js/upload.js?v=3.3.0',
-    './js/snapshot.js?v=3.3.0',
-    './js/archive.js?v=3.3.0',
-    './js/workflow.js?v=3.3.0',
-    './js/app.js?v=3.3.0',
-    './js/parsers/text.js?v=3.3.0',
-    './js/parsers/csv.js?v=3.3.0',
-    './js/parsers/office.js?v=3.3.0',
-    './js/parsers/pdf.js?v=3.3.0',
+    './css/main.css?v=3.6.0',
+    './css/theme.css?v=3.6.0',
+    './js/utils.js?v=3.6.0',
+    './js/storage.js?v=3.6.0',
+    './js/api.js?v=3.6.0',
+    './js/auth.js?v=3.6.0',
+    './js/admin.js?v=3.6.0',
+    './js/ui.js?v=3.6.0',
+    './js/parser.js?v=3.6.0',
+    './js/chunker.js?v=3.6.0',
+    './js/upload.js?v=3.6.0',
+    './js/snapshot.js?v=3.6.0',
+    './js/exporter.js?v=3.6.0',
+    './js/archive.js?v=3.6.0',
+    './js/workflow.js?v=3.6.0',
+    './js/app.js?v=3.6.0',
+    './js/parsers/text.js?v=3.6.0',
+    './js/parsers/csv.js?v=3.6.0',
+    './js/parsers/office.js?v=3.6.0',
+    './js/parsers/pdf.js?v=3.6.0',
     './manifest.json',
     './presets.json',
 ];
@@ -31,8 +32,11 @@ const PRECACHE = [
 self.addEventListener('install', (e) => {
     e.waitUntil(
         caches.open(CACHE_NAME).then(cache =>
-            Promise.allSettled(PRECACHE.map(url =>
-                fetch(url, { cache: 'reload' }).then(resp => { if (resp.ok) return cache.put(url, resp); }).catch(() => {})
+            Promise.all(PRECACHE.map(url =>
+                fetch(url, { cache: 'reload' }).then(resp => {
+                    if (!resp.ok) throw new Error('预缓存失败：' + url + ' (' + resp.status + ')');
+                    return cache.put(url, resp);
+                })
             ))
         ).then(() => self.skipWaiting())
     );
@@ -55,6 +59,10 @@ self.addEventListener('fetch', (e) => {
         fetch(req).then(resp => {
             if (resp && resp.ok) { const copy = resp.clone(); caches.open(CACHE_NAME).then(c => c.put(req, copy)).catch(() => {}); }
             return resp;
-        }).catch(() => caches.match(req).then(r => r || caches.match('./index.html')))
+        }).catch(() => caches.match(req).then(r => {
+            if (r) return r;
+            if (req.mode === 'navigate') return caches.match('./index.html');
+            return Response.error();
+        }))
     );
 });
