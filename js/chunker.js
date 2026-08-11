@@ -66,61 +66,76 @@ const Chunker = (function () {
         return s;
     }
 
-    /* ========== 核心：按"字数"逐字累加切块 ==========
-       逐字符扫描，实时用 cntW 累计"字数"，够 size 就切一块。
-       因为 cntW 里英文/数字连续算1词，切块时按"字符边界"切，
-       但用 cntW 复算每块字数 —— 保证"每块字数=各块之和=全文"绝对成立。 */
+    function _isCountedHan(ch) {
+        try { return /[\u4e00-\u9fff\u3400-\u4dbf\u{20000}-\u{2a6df}\u3000-\u303f\uff00-\uffef]/u.test(ch); }
+        catch (e) { return /[\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\uff00-\uffef]/.test(ch); }
+    }
+
+    /* 与 cntW 相同口径扫描词元，并记录完整词元边界，避免把英文单词从中间切开。 */
+    function _scanTokens(chars) {
+        const tokens = [];
+        let i = 0;
+        while (i < chars.length) {
+            const ch = chars[i];
+            if (_isCountedHan(ch)) {
+                tokens.push({ start: i, end: i + 1 });
+                i++;
+                continue;
+            }
+            if (_isLatinWordChar(ch)) {
+                const start = i;
+                i++;
+                while (i < chars.length) {
+                    if (_isLatinWordChar(chars[i])) { i++; continue; }
+                    if ((chars[i] === "'" || chars[i] === '’' || chars[i] === '-')
+                        && i + 1 < chars.length && _isLatinWordChar(chars[i + 1])) {
+                        i += 2;
+                        continue;
+                    }
+                    break;
+                }
+                tokens.push({ start: start, end: i });
+                continue;
+            }
+            i++;
+        }
+        return tokens;
+    }
+
+    /* ========== 核心：按完整词元单次扫描切块（O(n)） ========== */
     function chunk(text, opts) {
         opts = opts || {};
-        const size = opts.size || DEFAULT_SIZE;
+        const size = Math.max(1, parseInt(opts.size, 10) || DEFAULT_SIZE);
         const doClean = opts.clean !== false;
 
         const cleaned = doClean ? clean(text) : String(text || '');
         const chars = _chars(cleaned);
         const n = chars.length;
-
-        const totalWords = _wc(cleaned);   // 全文总字数（唯一标准）
         if (!n) return { total: 0, size: size, blocks: [], marked: '', cleaned: cleaned };
 
+        const tokens = _scanTokens(chars);
+        const totalWords = tokens.length;
+        if (!totalWords) {
+            const only = { no: 1, words: 0, wStart: 0, wEnd: 0, pctStart: 0, pctEnd: 0, text: cleaned };
+            return { total: 0, size: size, blocks: [only], marked: _render([only], 0), cleaned: cleaned };
+        }
+
         const blocks = [];
-        let idx = 1;
-        let segStart = 0;              // 当前块起始字符下标
-        let cumWordsBefore = 0;        // 已完成块的累计字数
-
-        let i = 0;
-        while (i < n) {
-            // 从 segStart 向后推进，直到本段 cntW 达到/超过 size，或到文末
-            // 用"试探"方式：每推进一个字符，复算本段字数
-            let j = i;
-            // 每步至少前进1字符，避免死循环
-            j++;
-            const curSeg = chars.slice(segStart, j).join('');
-            const curWords = _wc(curSeg);
-
-            if (curWords >= size || j >= n) {
-                // 收一块
-                const body = chars.slice(segStart, j).join('');
-                const blockWords = _wc(body);
-                const wStart = cumWordsBefore + 1;
-                const wEnd = cumWordsBefore + blockWords;
-                const pctStart = totalWords ? +((cumWordsBefore / totalWords) * 100).toFixed(1) : 0;
-                const pctEnd = totalWords ? +((wEnd / totalWords) * 100).toFixed(1) : 0;
-
-                blocks.push({
-                    no: idx++,
-                    words: blockWords,
-                    wStart: wStart,
-                    wEnd: wEnd,
-                    pctStart: pctStart,
-                    pctEnd: pctEnd,
-                    text: body,
-                });
-                cumWordsBefore = wEnd;
-                segStart = j;
-                i = j;
-            } else {
-                i = j;
-            }
+        let charStart = 0;
+        for (let tokenStart = 0; tokenStart < totalWords; tokenStart += size) {
+            const tokenEnd = Math.min(tokenStart + size, totalWords);
+            const charEnd = tokenEnd < totalWords ? tokens[tokenEnd].start : n;
+            const blockWords = tokenEnd - tokenStart;
+            blocks.push({
+                no: blocks.length + 1,
+                words: blockWords,
+                wStart: tokenStart + 1,
+                wEnd: tokenEnd,
+                pctStart: +((tokenStart / totalWords) * 100).toFixed(1),
+                pctEnd: +((tokenEnd / totalWords) * 100).toFixed(1),
+                text: chars.slice(charStart, charEnd).join(''),
+            });
+            charStart = charEnd;
         }
 
         return {
