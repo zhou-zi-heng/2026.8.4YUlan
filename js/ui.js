@@ -45,27 +45,68 @@ const UI = (function () {
         return html;
     }
 
-    /* ---------- KaTeX 数学公式 ---------- */
+    /* ---------- KaTeX 数学公式（★修：中文/金额不再被误判成公式） ---------- */
+
+    /* 含中文或中文标点 → 一定不是数学公式 */
+    const _CJK_RE = /[\u4e00-\u9fa5\u3000-\u303f\uff00-\uffef]/;
+
+    /* 只有具备数学特征才当公式渲染 */
+    function _looksLikeMath(s) {
+        if (!s) return false;
+        const t = s.trim();
+        if (!t) return false;
+        if (_CJK_RE.test(t)) return false;                 // 有中文 → 排除
+        if (/^\s|\s$/.test(s)) return false;               // "$ 50 " 这种带空格 → 排除
+        if (t.length > 200) return false;                  // 过长基本是误判
+        if (/^[\d.,%]+$/.test(t)) return false;            // 纯数字/金额 → 排除
+        if (/\\[a-zA-Z]+/.test(t)) return true;            // \frac \alpha \sum
+        if (/[\^_]{1}[\{\w]/.test(t)) return true;         // 上下标 x^2 a_1
+        if (/[=<>≠≈±×÷]/.test(t)) return true;             // 关系符
+        if (/[+\-*\/]/.test(t) && /[a-zA-Z]/.test(t)) return true;   // 含变量的运算式
+        if (/^[a-zA-Z][a-zA-Z0-9]{0,3}$/.test(t)) return true;       // 单变量 x, y1
+        return false;
+    }
+
     function renderMath(container) {
         if (!window.katex) return;
+
+        /* 整体没有 $ 直接跳过，避免无谓遍历（也就不会触发 KaTeX 字体下载） */
+        if ((container.textContent || '').indexOf('$') < 0) return;
+
         const blockRegex = /\$\$([\s\S]+?)\$\$/g;
         const inlineRegex = /\$([^\$\n]+?)\$/g;
+
         function processNode(node) {
             if (node.nodeType === Node.TEXT_NODE) {
                 const text = node.textContent;
-                if (!text.includes('$')) return;
+                if (!text || text.indexOf('$') < 0) return;
                 const parent = node.parentNode;
                 if (!parent || parent.tagName === 'CODE' || parent.tagName === 'PRE') return;
+
+                let changed = false;
                 let html = esc(text);
-                html = html.replace(blockRegex, (_, expr) => {
-                    try { return katex.renderToString(expr, { displayMode: true, throwOnError: false }); }
-                    catch (e) { return _; }
+
+                /* 块级 $$...$$ */
+                html = html.replace(blockRegex, (m, expr) => {
+                    if (_CJK_RE.test(expr)) return m;
+                    try {
+                        const r = katex.renderToString(expr, { displayMode: true, throwOnError: false, strict: false });
+                        changed = true;
+                        return r;
+                    } catch (e) { return m; }
                 });
-                html = html.replace(inlineRegex, (_, expr) => {
-                    try { return katex.renderToString(expr, { displayMode: false, throwOnError: false }); }
-                    catch (e) { return _; }
+
+                /* 行内 $...$ —— 中文/金额直接放过 */
+                html = html.replace(inlineRegex, (m, expr) => {
+                    if (!_looksLikeMath(expr)) return m;
+                    try {
+                        const r = katex.renderToString(expr, { displayMode: false, throwOnError: false, strict: false });
+                        changed = true;
+                        return r;
+                    } catch (e) { return m; }
                 });
-                if (html !== esc(text)) {
+
+                if (changed) {
                     const span = document.createElement('span');
                     span.innerHTML = html;
                     parent.replaceChild(span, node);
@@ -77,6 +118,7 @@ const UI = (function () {
         }
         processNode(container);
     }
+
 
     /* ========================================================== */
     /* ====== 代码块：外置工具条（不遮挡内容） ================== */
@@ -480,6 +522,14 @@ const UI = (function () {
                 w.textContent = wc + ' 字';
                 mm.appendChild(w);
             }
+        }
+
+        if (msg.role === 'assistant' && msg._error) {
+            const er = document.createElement('span');
+            er.style.cssText = 'color:#ef4444;font-size:11px';
+            er.textContent = '⚠️ ' + String(msg._error).replace(/\s+/g, ' ').slice(0, 160);
+            er.title = String(msg._error);
+            mm.appendChild(er);
         }
 
         const cpBtn = document.createElement('button');
