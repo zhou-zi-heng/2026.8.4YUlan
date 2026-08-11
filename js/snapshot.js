@@ -15,13 +15,22 @@ const Snapshot = (function () {
     const PBKDF2_ITERATIONS = 100000;
     const SUPPORTS_CRYPTO = !!(window.crypto && window.crypto.subtle);
 
-    function quickHash(obj) {
-        try {
-            const str = JSON.stringify(obj);
-            return str.length + ':' + str.slice(0, 100) + ':' + str.slice(-100);
-        } catch (e) {
-            return String(Date.now());
+    function _fallbackHash(str) {
+        let h = 2166136261;
+        for (let i = 0; i < str.length; i++) {
+            h ^= str.charCodeAt(i);
+            h = Math.imul(h, 16777619);
         }
+        return 'f:' + (h >>> 0).toString(16) + ':' + str.length;
+    }
+
+    async function contentHash(obj) {
+        const str = JSON.stringify(obj);
+        if (SUPPORTS_CRYPTO) {
+            const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+            return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+        return _fallbackHash(str);
     }
 
     function startAuto(intervalMin, getStateFn) {
@@ -36,7 +45,7 @@ const Snapshot = (function () {
         _autoTimer = setInterval(async () => {
             try {
                 const state = getStateFn();
-                const h = quickHash(state);
+                const h = await contentHash(state);
                 if (h === _lastSnapHash) {
                     console.log('[Snapshot] 数据无变化，跳过');
                     return;
@@ -59,7 +68,7 @@ const Snapshot = (function () {
 
     async function snapNow(state) {
         await DB.saveAutoSnapshot(state);
-        _lastSnapHash = quickHash(state);
+        _lastSnapHash = await contentHash(state);
     }
 
     /* ---------- 导出快照（支持不带 key） ---------- */
@@ -98,7 +107,7 @@ const Snapshot = (function () {
         }
 
         if (raw.__feifan_snapshot__ && raw.data) {
-            return { state: raw.data, source: 'feifan-v' + (raw.version || '?') };
+            return { state: normalizeCurrentState(raw.data), source: 'feifan-v' + (raw.version || '?') };
         }
 
         if (raw.chats && typeof raw.chats === 'object') {
@@ -147,6 +156,13 @@ const Snapshot = (function () {
             currentEngId: 'zenmux',
             theme: 'light',
             snapInterval: 5,
+            archiveInterval: 10,
+            userName: '',
+            uiMode: 'chat',
+            defaultMode: 'free',
+            folders: [],
+            folderCollapsed: {},
+            _engineMigrated: false,
         };
 
         if (old.profiles && typeof old.profiles === 'object') {
@@ -183,6 +199,10 @@ const Snapshot = (function () {
                                    (Array.isArray(c.kb) ? c.kb : []),
                     isPinned: !!(c.isPinned || c.pinned),
                     isArchived: !!(c.isArchived || c.archived),
+                    refPool: Array.isArray(c.refPool) ? c.refPool : [],
+                    folderId: c.folderId || null,
+                    mode: c.mode || 'free',
+                    modeLocked: !!c.modeLocked,
                     createdAt: c.createdAt || c.created || Date.now(),
                     updatedAt: c.updatedAt || c.updated || Date.now(),
                 };
@@ -202,15 +222,62 @@ const Snapshot = (function () {
         n.currentEngId = old.currentEngId || (Object.keys(n.profiles)[0] || 'zenmux');
         n.theme = old.theme || 'light';
         n.snapInterval = (old.snapInterval !== undefined) ? old.snapInterval : 5;
-        // ★ 保留用户名（如果旧状态里有）
-        if (old.userName) n.userName = old.userName;
+        n.archiveInterval = (old.archiveInterval !== undefined) ? old.archiveInterval : 10;
+        n.userName = old.userName || '';
+        n.uiMode = old.uiMode || 'chat';
+        n.defaultMode = old.defaultMode || 'free';
+        n.folders = Array.isArray(old.folders) ? old.folders : [];
+        n.folderCollapsed = old.folderCollapsed && typeof old.folderCollapsed === 'object' ? old.folderCollapsed : {};
+        n._engineMigrated = !!old._engineMigrated;
 
+        return n;
+    }
+
+    function normalizeCurrentState(raw) {
+        let src;
+        try { src = JSON.parse(JSON.stringify(raw || {})); }
+        catch (e) { throw new Error('快照状态无法序列化'); }
+        const n = Object.assign({
+            profiles: {}, chats: {}, chatOrder: [], currentChatId: null, currentEngId: '',
+            theme: 'light', snapInterval: 5, archiveInterval: 10, userName: '',
+            uiMode: 'chat', defaultMode: 'free', folders: [], folderCollapsed: {},
+            _engineMigrated: false,
+        }, src);
+        if (!n.profiles || typeof n.profiles !== 'object' || Array.isArray(n.profiles)) n.profiles = {};
+        if (!n.chats || typeof n.chats !== 'object' || Array.isArray(n.chats)) n.chats = {};
+        if (!Array.isArray(n.folders)) n.folders = [];
+        if (!n.folderCollapsed || typeof n.folderCollapsed !== 'object') n.folderCollapsed = {};
+        for (const id of Object.keys(n.chats)) {
+            const c = n.chats[id];
+            if (!c || typeof c !== 'object') { delete n.chats[id]; continue; }
+            c.id = c.id || id;
+            c.title = c.title || '导入的对话';
+            c.messages = Array.isArray(c.messages) ? c.messages.map(m => {
+                if (!m || typeof m !== 'object') return null;
+                return Object.assign({}, m, {
+                    id: m.id || gId(), role: m.role || 'user',
+                    content: m.content !== undefined ? m.content : '',
+                    _streaming: false, _interrupted: !!m._interrupted,
+                });
+            }).filter(Boolean) : [];
+            c.knowledgeBase = Array.isArray(c.knowledgeBase) ? c.knowledgeBase : [];
+            c.refPool = Array.isArray(c.refPool) ? c.refPool : [];
+            c.folderId = c.folderId || null;
+        }
+        const seen = new Set();
+        n.chatOrder = (Array.isArray(n.chatOrder) ? n.chatOrder : []).filter(id => {
+            if (!n.chats[id] || seen.has(id)) return false;
+            seen.add(id); return true;
+        });
+        Object.keys(n.chats).forEach(id => { if (!seen.has(id)) n.chatOrder.push(id); });
+        if (!n.currentChatId || !n.chats[n.currentChatId]) n.currentChatId = n.chatOrder[0] || null;
+        if (!n.currentEngId) n.currentEngId = Object.keys(n.profiles)[0] || '';
         return n;
     }
 
     function normalizeOldMessage(m) {
         if (!m || typeof m !== 'object') return null;
-        return {
+        return Object.assign({}, m, {
             id: m.id || gId(),
             role: m.role || 'user',
             content: m.content !== undefined ? m.content : (m.text || ''),
@@ -218,12 +285,14 @@ const Snapshot = (function () {
             _time: m._time || m.time || '',
             _streaming: false,
             _interrupted: !!m._interrupted,
-        };
+        });
     }
 
     /* ---------- 智能 key 保护 ---------- */
     function protectLocalKeys(incoming, current) {
-        if (!incoming || !incoming.profiles || !current || !current.profiles) return incoming;
+        if (!incoming || !incoming.profiles || !current || !current.profiles) {
+            return { state: incoming, protectedCount: 0 };
+        }
         const result = JSON.parse(JSON.stringify(incoming));
         let protectedCount = 0;
         for (const id in result.profiles) {
@@ -260,12 +329,66 @@ const Snapshot = (function () {
 
     function mergeStates(current, incoming) {
         const merged = JSON.parse(JSON.stringify(current));
-        merged.profiles = Object.assign({}, current.profiles || {}, incoming.profiles || {});
-        merged.chats = Object.assign({}, current.chats || {}, incoming.chats || {});
+        merged.profiles = merged.profiles || {};
+        merged.chats = merged.chats || {};
+        merged.folders = Array.isArray(merged.folders) ? merged.folders : [];
+        const suffix = Date.now().toString(36);
+        let seq = 0;
+        const uniqueId = (base, exists) => {
+            let id;
+            do { id = String(base || 'item') + '_import_' + suffix + '_' + (++seq); } while (exists(id));
+            return id;
+        };
+
+        const profileMap = {};
+        for (const id in (incoming.profiles || {})) {
+            const p = JSON.parse(JSON.stringify(incoming.profiles[id] || {}));
+            let targetId = id;
+            if (merged.profiles[targetId]) {
+                if (JSON.stringify(merged.profiles[targetId]) === JSON.stringify(p)) { profileMap[id] = targetId; continue; }
+                targetId = uniqueId(id, x => !!merged.profiles[x]);
+            }
+            p.id = targetId;
+            merged.profiles[targetId] = p;
+            profileMap[id] = targetId;
+        }
+
+        const folderMap = {};
+        for (const folder of (incoming.folders || [])) {
+            if (!folder || !folder.id) continue;
+            const copy = JSON.parse(JSON.stringify(folder));
+            let targetId = copy.id;
+            const existing = merged.folders.find(f => f && f.id === targetId);
+            if (existing) {
+                if ((existing.name || '') === (copy.name || '')) { folderMap[copy.id] = targetId; continue; }
+                targetId = uniqueId(copy.id, x => merged.folders.some(f => f && f.id === x));
+            }
+            folderMap[copy.id] = targetId;
+            copy.id = targetId;
+            merged.folders.push(copy);
+        }
+
+        const chatMap = {};
+        for (const id in (incoming.chats || {})) {
+            const chat = JSON.parse(JSON.stringify(incoming.chats[id] || {}));
+            let targetId = id;
+            if (merged.chats[targetId]) {
+                if (JSON.stringify(merged.chats[targetId]) === JSON.stringify(chat)) { chatMap[id] = targetId; continue; }
+                targetId = uniqueId(id, x => !!merged.chats[x]);
+            }
+            chat.id = targetId;
+            if (chat.folderId && folderMap[chat.folderId]) chat.folderId = folderMap[chat.folderId];
+            (chat.messages || []).forEach(m => {
+                if (m && m._engId && profileMap[m._engId]) m._engId = profileMap[m._engId];
+            });
+            merged.chats[targetId] = chat;
+            chatMap[id] = targetId;
+        }
         const seen = new Set();
         const newOrder = [];
         (incoming.chatOrder || []).forEach(id => {
-            if (merged.chats[id] && !seen.has(id)) { newOrder.push(id); seen.add(id); }
+            const mapped = chatMap[id] || id;
+            if (merged.chats[mapped] && !seen.has(mapped)) { newOrder.push(mapped); seen.add(mapped); }
         });
         (current.chatOrder || []).forEach(id => {
             if (merged.chats[id] && !seen.has(id)) { newOrder.push(id); seen.add(id); }
