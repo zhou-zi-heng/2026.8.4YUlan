@@ -1,6 +1,6 @@
 /* ===== ZenMux 工具函数库 (v2.7.0) ===== */
 
-const APP_VERSION = '2.7.0';
+const APP_VERSION = '3.6.0';
 
 function gId() {
     return crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
