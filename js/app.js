@@ -709,7 +709,7 @@ function toggleChunk(){
 }
 function previewChunkObj(att){if(typeof Chunker==='undefined'){toast('打标引擎未加载','er');return;}if(!att||!att.text){toast('该附件无文本','er');return;}const ta=document.getElementById('chunkPreviewTA');if(ta)ta.value=Chunker.previewOne(att);const h=document.querySelector('#mo-chunk-preview .md-h h2');if(h)h.textContent='📐 打标预览';openM('chunk-preview');}
 function copyChunkPreview(){const ta=document.getElementById('chunkPreviewTA');if(!ta||!ta.value){toast('无内容','er');return;}try{navigator.clipboard.writeText(ta.value).then(()=>toast('✅ 已复制'));}catch(e){ta.select();document.execCommand('copy');toast('✅ 已复制');}}
-function previewSend(){const c=curChat();if(!c){toast('无对话','er');return;}const eff=effectiveProfile();let out='';out+='━━━ 本轮将使用 ━━━\n引擎：'+(eff?eff.name:'-')+'\n模型：'+(eff?eff.model:'-')+'\n类型：'+(eff&&eff.engineType==='image'?'生图':'对话')+'\n参数：';if(eff){const ps=[];if(eff.useTemp)ps.push('temperature='+eff.temperature);if(eff.useMax)ps.push('max_tokens='+eff.max_tokens);if(eff.useTopP)ps.push('top_p='+eff.top_p);if(eff.useFreq)ps.push('frequency_penalty='+eff.frequency_penalty);out+=(ps.length?ps.join('，'):'（全部未启用，用平台默认）');}out+='\n\n';let sys='';if(c.systemPrompt&&c.systemPrompt.trim())sys+=c.systemPrompt.trim();let kbText='';if(c.knowledgeBase&&c.knowledgeBase.length){c.knowledgeBase.forEach(k=>{if(k.text)kbText+='\n[知识库]'+k.name+'（'+cntW(k.text)+'字）';});}if(kbText)sys+='\n【知识库资料】'+kbText;out+='━━━ SYSTEM ━━━\n'+(sys||'（空）')+'\n\n';let ref='';sortedRefPool().forEach(r=>{if(!r.checked)return;if(r.kind==='file'&&r.type==='image'){ref+='\n[图片] '+r.name;return;}if(!r.text)return;let body=r.text;if(r.kind==='file'&&r.chunk&&typeof Chunker!=='undefined')body=Chunker.chunk(r.text,{}).marked;ref+='\n=== '+(r.kind==='file'?'📎'+r.name:'💬'+r.name)+' ===\n'+body+'\n';});out+='━━━ 参考框（勾选项，文件在前）━━━\n'+(ref||'（无勾选项）')+'\n\n';const inpVal=(document.getElementById('uIn')?document.getElementById('uIn').value:'')||'（输入框当前为空）';out+='━━━ 本轮问题 ━━━\n'+inpVal+'\n\n━━━ 说明 ━━━\n实际发送还含历史对话。工作流隐藏指令不展示。';const ta=document.getElementById('chunkPreviewTA');if(ta)ta.value=out;const h=document.querySelector('#mo-chunk-preview .md-h h2');if(h)h.textContent='📤 发送内容预览';openM('chunk-preview');}
+function previewSend(){const c=curChat();if(!c){toast('无对话','er');return;}const eff=effectiveProfile();let out='';out+='━━━ 本轮将使用 ━━━\n引擎：'+(eff?eff.name:'-')+'\n模型：'+(eff?eff.model:'-')+'\n类型：'+(eff&&eff.engineType==='image'?'生图':'对话')+'\n参数：';if(eff){const ps=[];if(eff.useTemp)ps.push('temperature='+eff.temperature);if(eff.useMax)ps.push('max_tokens='+eff.max_tokens);if(eff.useTopP)ps.push('top_p='+eff.top_p);if(eff.useFreq)ps.push('frequency_penalty='+eff.frequency_penalty);out+=(ps.length?ps.join('，'):'（全部未启用，用平台默认）');}out+='\n\n';let sys='';if(c.systemPrompt&&c.systemPrompt.trim())sys+=c.systemPrompt.trim();let kbText='';if(c.knowledgeBase&&c.knowledgeBase.length){c.knowledgeBase.forEach(k=>{if(k.text)kbText+='\n[知识库]'+k.name+'（'+cntW(k.text)+'字）';});}if(kbText)sys+='\n【知识库资料】'+kbText;out+='━━━ SYSTEM ━━━\n'+(sys||'（空）')+'\n\n';let ref='';sortedRefPool().forEach(r=>{if(!r.checked)return;if(r.kind==='file'&&r.type==='image'){ref+='\n[图片] '+r.name;return;}if(!r.text)return;let body=r.text;if(r.kind==='file'&&r.chunk&&typeof Chunker!=='undefined')body=Chunker.chunk(r.text,{}).marked;ref+='\n=== '+(r.kind==='file'?'📎'+r.name:'💬'+r.name)+' ===\n'+body+'\n';});out+='━━━ 参考框（勾选项，文件在前）━━━\n'+(ref||'（无勾选项）')+'\n\n';const rawIn=document.getElementById('uIn')?document.getElementById('uIn').value:'';const inpVal=rawIn||'（输入框当前为空）';let skillBlock='（本轮不注入）';if(eff&&eff.engineType==='image')skillBlock='（生图请求不注入 Skill）';else if(typeof Skills!=='undefined'&&Skills.prepareForSend){try{const sp=Skills.prepareForSend(rawIn||'');skillBlock=(sp&&sp.injection)?sp.injection+(sp.omitted?('\n\n（另有 '+sp.omitted+' 个因每轮上限未注入）'):''):'（本轮不注入）';}catch(err){skillBlock='（Skill 预览失败）';}}out+='━━━ 本轮问题 ━━━\n'+inpVal+'\n\n━━━ 本轮 Skill（只读，实际写入 system）━━━\n'+skillBlock+'\n\n━━━ 说明 ━━━\n实际发送还含历史对话。工作流隐藏指令不展示。未启用、未匹配且未手动勾选的 Skill 不会注入。';const ta=document.getElementById('chunkPreviewTA');if(ta)ta.value=out;const h=document.querySelector('#mo-chunk-preview .md-h h2');if(h)h.textContent='📤 发送内容预览';openM('chunk-preview');}
 
 /* ===== 思考过程提取（数据仍存，气泡已移除不渲染） ===== */
 function extractReasoning(fullText,streamReasoning){
@@ -787,11 +787,26 @@ async function coreSend(opts){
 
     const composedUserText=(attachedText?attachedText+'\n':'')+actualText;
 
+    /* Skill 正文只进入本轮 sendMsgs 的 system，不写入消息 content，避免逐轮堆进历史。 */
+    let skillPack={injection:'',used:[],omitted:0};
+    const imageTurn=profile.engineType==='image';
+    const replayTurn=Array.isArray(opts.replaySkills)&&opts.replaySkills.length;
+    if(!imageTurn&&typeof Skills!=='undefined'){
+        try{
+            if(replayTurn&&Skills.replay)skillPack=Skills.replay(opts.replaySkills)||skillPack;
+            else if(Skills.prepareForSend){
+                const skillMatchText=[visibleText,actualText].filter(function(x){return typeof x==='string'&&x;}).join('\n');
+                skillPack=Skills.prepareForSend(skillMatchText)||skillPack;
+            }
+        }catch(err){console.warn('[Skills] 本轮跳过注入',err);skillPack={injection:'',used:[],omitted:0};}
+    }
+
     const userMsg={
         id:gId(),role:'user',content:visibleText,_actual:actualText,
         attachments:attsForUser.map(a=>({name:a.fileName,type:a.type,ext:a.meta&&a.meta.ext})),
         _time:nowTime()
     };
+    if(skillPack.used&&skillPack.used.length)userMsg._skills=skillPack.used.map(function(u){return {id:u.id,name:u.name,reason:u.reason};});
     c.messages.push(userMsg);
 
     const aiMsg={
@@ -816,6 +831,7 @@ async function coreSend(opts){
     let systemContent='';
     if(c.systemPrompt&&c.systemPrompt.trim())systemContent+=c.systemPrompt.trim();
     if(kbText)systemContent+=(systemContent?'\n\n':'')+'【以下是持续参考的知识库资料，请在回答时参考】'+kbText;
+    if(skillPack.injection&&typeof Skills!=='undefined'&&Skills.attachToSystem)systemContent=Skills.attachToSystem(systemContent,skillPack.injection);
     if(systemContent)sendMsgs.push({role:'system',content:systemContent});
 
     if(refText){
@@ -860,6 +876,10 @@ async function coreSend(opts){
     const area=document.getElementById('msgsArea');
     const lastMsgEl=area.querySelector('.msg:last-child .bub');
     if(!lastMsgEl)return false;
+
+    if(!imageTurn&&!replayTurn&&skillPack.used&&skillPack.used.length&&typeof Skills!=='undefined'&&Skills.consumeManual){
+        try{Skills.consumeManual(skillPack.used);}catch(err){console.warn('[Skills]',err);}
+    }
 
     const updater=UI.makeStreamUpdater(lastMsgEl,area);
     let lastSaveTime=Date.now();
@@ -962,6 +982,19 @@ async function continueGenerate(msg){
     const sendMsgs=[];
     let systemContent='';
     if(c.systemPrompt&&c.systemPrompt.trim())systemContent+=c.systemPrompt.trim();
+    if(typeof Skills!=='undefined'&&Skills.replay&&Skills.attachToSystem){
+        let replayEntries=[];
+        for(let si=idx-1;si>=0;si--){
+            const prev=c.messages[si];
+            if(!prev||prev.role!=='user')continue;
+            if(Array.isArray(prev._skills)&&prev._skills.length)replayEntries=prev._skills;
+            break;
+        }
+        try{
+            const replayed=replayEntries.length?Skills.replay(replayEntries):null;
+            if(replayed&&replayed.injection)systemContent=Skills.attachToSystem(systemContent,replayed.injection);
+        }catch(err){console.warn('[Skills] 续写跳过注入',err);}
+    }
     if(systemContent)sendMsgs.push({role:'system',content:systemContent});
     for(let i=0;i<=idx;i++){
         const m=c.messages[i];
@@ -1103,7 +1136,7 @@ async function send(){
     const userVisibleText=text||'(已上传 '+_pendingAtts.length+' 个附件)';
     const attsForUser=_pendingAtts.slice();
     const started=await coreSend({visibleText:userVisibleText,actualText:text,atts:attsForUser,titleHint:text});
-    if(started){inp.value='';aRsz(inp);_pendingAtts=[];renderAttList();if(typeof renderWfAtts==='function')renderWfAtts();}
+    if(started){inp.value='';aRsz(inp);_pendingAtts=[];renderAttList();if(typeof renderWfAtts==='function')renderWfAtts();if(typeof Skills!=='undefined'&&Skills.syncTurnBar)Skills.syncTurnBar('');}
 }
 
 /* ===== 生图 / 改图 ===== */
@@ -1229,7 +1262,7 @@ async function coreSendImage(prompt){
     return true;
 }
 
-async function regenerate(msg){const c=curChat();if(!c)return;const idx=c.messages.indexOf(msg);if(idx<1)return;const prev=c.messages[idx-1];if(prev.role!=='user'){toast('无法找到对应的提问','er');return;}const actual=prev._actual||(typeof prev.content==='string'?prev.content:'');const visible=typeof prev.content==='string'?prev.content:'';c.messages.splice(idx,1);c.messages.splice(idx-1,1);await saveNow();renderMs();await coreSend({visibleText:visible,actualText:actual,titleHint:visible});}
+async function regenerate(msg){const c=curChat();if(!c)return;const idx=c.messages.indexOf(msg);if(idx<1)return;const prev=c.messages[idx-1];if(prev.role!=='user'){toast('无法找到对应的提问','er');return;}const actual=prev._actual||(typeof prev.content==='string'?prev.content:'');const visible=typeof prev.content==='string'?prev.content:'';c.messages.splice(idx,1);c.messages.splice(idx-1,1);await saveNow();renderMs();await coreSend({visibleText:visible,actualText:actual,titleHint:visible,replaySkills:(prev._skills&&prev._skills.length)?prev._skills:undefined});}
 
 /* ===== 输入框 / 快捷指令面板 ===== */
 function aRsz(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,130)+'px';}
@@ -1238,6 +1271,7 @@ function onInputChange(el){
     const val=el.value;
     if(val.startsWith('/'))showCmdPanel(val.slice(1).toLowerCase());
     else hideCmdPanel();
+    if(typeof Skills!=='undefined'&&Skills.syncTurnBar)Skills.syncTurnBar(val);
 }
 function showCmdPanel(kw){
     const panel=document.getElementById('cmdPanel');
@@ -1263,6 +1297,7 @@ function applyCmd(idx){
     el.focus();
     try{el.setSelectionRange(el.value.length,el.value.length);}catch(e){}
     aRsz(el);
+    if(typeof Skills!=='undefined'&&Skills.syncTurnBar)Skills.syncTurnBar(el.value);
 }
 function hKey(e){
     const panel=document.getElementById('cmdPanel');
@@ -1278,7 +1313,7 @@ function hKey(e){
 }
 
 /* ===== 弹窗 / 上传 ===== */
-function openM(n){const m=document.getElementById('mo-'+n);if(!m)return;m.classList.add('show');if(n==='cs'){renderCSForm();renderKBList();}if(n==='set'){renderEngTabs();renderEngForm();renderStorageInfo();renderGlobalSettings();}if(n==='exp'){renderExpMsgList();updExpPreview();}if(n==='snap'&&IS_IOS){const w=document.getElementById('iosW');if(w)w.style.display='block';}}
+function openM(n){const m=document.getElementById('mo-'+n);if(!m)return;m.classList.add('show');if(n==='cs'){renderCSForm();renderKBList();}if(n==='set'){renderEngTabs();renderEngForm();renderStorageInfo();renderGlobalSettings();}if(n==='exp'){renderExpMsgList();updExpPreview();}if(n==='snap'&&IS_IOS){const w=document.getElementById('iosW');if(w)w.style.display='block';}if(n==='skills'&&typeof Skills!=='undefined'&&Skills.renderPanel)Skills.renderPanel();}
 function closeM(n){const m=document.getElementById('mo-'+n);if(m)m.classList.remove('show');}
 function togSB(){document.getElementById('sb').classList.toggle('open');document.getElementById('sbOv').classList.toggle('show');}
 function togAtt(){document.getElementById('attPan').classList.toggle('show');}
@@ -1388,6 +1423,7 @@ async function initApp(){
         await DB.migrateFromLocalStorage();
         await DB.requestPersistent();
         await loadState();
+        if(typeof Skills!=='undefined'&&Skills.load){try{await Skills.load();}catch(err){console.warn('[Skills] 读取失败',err);}}
         await loadPublicEngines();
         await loadModelPrices();
         await loadGlobalConfig();

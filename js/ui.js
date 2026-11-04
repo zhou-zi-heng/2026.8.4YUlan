@@ -493,6 +493,18 @@ const UI = (function () {
             m.appendChild(mf);
         }
 
+        if (msg.role === 'user' && Array.isArray(msg._skills) && msg._skills.length) {
+            const tag = document.createElement('div');
+            tag.className = 'skill-used';
+            const names = msg._skills.map(s => {
+                const name = (s && s.name) ? String(s.name) : '未命名';
+                const why = s && s.reason === '手动' ? '手动' : (s && s.reason === '匹配' ? '匹配' : '');
+                return why ? (name + '（' + why + '）') : name;
+            }).join('、');
+            tag.textContent = '🧩 本轮已带上：' + names;
+            m.appendChild(tag);
+        }
+
         /* ★ 思考气泡已移除（_reasoning 数据仍保留在消息对象里，不渲染） */
 
         const bub = document.createElement('div');

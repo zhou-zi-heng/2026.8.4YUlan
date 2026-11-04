@@ -1,7 +1,7 @@
 /* ===== 飞凡AI - Service Worker (v3.6.0) ===== */
 /* 离线打开 + 静态资源缓存 */
 
-const CACHE_NAME = 'feifan-ai-v3.6.0';
+const CACHE_NAME = 'feifan-ai-v3.6.1';
 const PRECACHE = [
     './',
     './index.html',
@@ -20,6 +20,7 @@ const PRECACHE = [
     './js/exporter.js?v=3.6.0',
     './js/archive.js?v=3.6.0',
     './js/workflow.js?v=3.6.0',
+    './js/skills.js?v=3.6.1',
     './js/app.js?v=3.6.0',
     './js/parsers/text.js?v=3.6.0',
     './js/parsers/csv.js?v=3.6.0',

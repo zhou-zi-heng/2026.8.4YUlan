@@ -168,6 +168,19 @@
             .hdr-acts button{padding:6px}
             .hdr-acts button .hi{font-size:16px}
         }
+
+        .skill-turn-bar{display:none;font-size:12px;line-height:1.5;color:var(--text2);padding:0 2px 6px;cursor:pointer}
+        .skill-turn-bar .on{color:var(--pri,#667eea);font-weight:600}
+        .skill-row{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--bg)}
+        .skill-row h4{font-size:14px;margin-bottom:4px}
+        .skill-desc,.skill-meta,.skill-empty{font-size:12px;color:var(--text2);line-height:1.55;margin:0 0 6px}
+        .skill-ops{display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px}
+        .skill-ops label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+        .skill-used{display:inline-block;font-size:11px;color:var(--pri,#667eea);background:var(--pri-l,rgba(102,126,234,.12));border-radius:6px;padding:2px 8px;margin-bottom:4px}
+        .skill-install{margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)}
+        .skill-install h4{font-size:13px;margin:12px 0 6px}
+        .skill-install textarea{width:100%;box-sizing:border-box;min-height:88px;margin:6px 0;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
+        .skill-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
     </style>
 </head>
 <body>
@@ -204,6 +217,7 @@
             </div>
             <div class="hdr-acts">
                 <button onclick="openM('cs')" title="会话设置"><span class="hi">🎛️</span><span class="ht">设置</span></button>
+                <button onclick="openM('skills')" title="Skill 只读安装"><span class="hi">🧩</span><span class="ht">技能</span></button>
                 <button onclick="toggleChunk()" id="chunkBtn" title="物理打标"><span class="hi">📐</span><span class="ht">打标</span></button>
                 <button onclick="toggleRefSelectMode()" id="refSelBtn" title="勾选消息加入参考框"><span class="hi">☑</span><span class="ht">选取</span></button>
                 <button onclick="openOutline()" id="outlineBtn" title="消息大纲（快速跳转）"><span class="hi">📑</span><span class="ht">大纲</span></button>
@@ -249,6 +263,7 @@
             <div class="inp-toolbar">
                 <span id="quickModelBar"></span>
             </div>
+            <div id="skillTurnBar" class="skill-turn-bar" onclick="openM('skills')" title="查看 Skill"></div>
 
             <div class="inp-wrap">
                 <div style="position:relative">
@@ -406,6 +421,25 @@
     <div class="admin-body" id="adminBody"></div>
 </div></div></div>
 
+<!-- 模态框：Skill 只读安装 -->
+<div class="mo" id="mo-skills"><div class="md" style="max-width:720px;max-height:88vh"><div class="md-h"><h2>🧩 Skill 只读安装</h2><button class="md-x" onclick="closeM('skills')">×</button></div><div class="md-b">
+    <p style="font-size:12px;color:var(--text2);line-height:1.7;margin-bottom:10px">只把说明书注入本轮对话，不执行代码，也不提供联网工具。每轮最多 3 个、合计约 6000 字，且只注入<strong>已启用</strong>并<strong>命中触发词或手动勾选</strong>的 Skill。未选中的不会发送。</p>
+    <div id="skillList"></div>
+    <div class="skill-install">
+        <div class="skill-actions">
+            <button type="button" class="btn btn-p btn-s" onclick="Skills.installSample()">安装内置示例</button>
+            <label class="btn btn-s" style="cursor:pointer">上传 zip<input id="skillZip" type="file" accept=".zip,application/zip" onchange="Skills.onZipInput(this)" style="display:none"></label>
+        </div>
+        <p style="font-size:11px;color:var(--text2);line-height:1.6">zip 内需有 <code>skill.json</code> 与 <code>SKILL.md</code>（可放在同一子目录）。其它文件会被忽略，不会执行。</p>
+        <h4>或粘贴安装</h4>
+        <label style="font-size:12px;color:var(--text2)">skill.json</label>
+        <textarea id="skillJsonIn" placeholder='{"name":"名称","description":"简介","version":"1.0.0","triggers":["触发词"]}'></textarea>
+        <label style="font-size:12px;color:var(--text2)">SKILL.md</label>
+        <textarea id="skillMdIn" placeholder="给模型看的流程说明（纯文本，不会被执行）"></textarea>
+        <button type="button" class="btn btn-s" onclick="Skills.installPasted()">从粘贴内容安装</button>
+    </div>
+</div></div></div>
+
 <div class="lightbox" id="lightbox" onclick="this.classList.remove('show')"><img id="lbImg" src=""></div>
 <div class="tc" id="tc"></div>
 
@@ -426,6 +460,7 @@
 <script src="js/workflow.js?v=3.3.0"></script>
 <script src="js/auth.js?v=3.3.0"></script>
 <script src="js/admin.js?v=3.3.0"></script>
+<script src="js/skills.js?v=3.6.1"></script>
 <script src="js/app.js?v=3.3.0"></script>
 
 </body>
